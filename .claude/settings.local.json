@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc:*)",
+      "Bash(./build.sh:*)",
+      "Bash(pgrep:*)",
+      "Bash(cmake:*)",
+      "Bash(g++:*)"
+    ]
+  }
+}
