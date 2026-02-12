@@ -528,6 +528,7 @@ PDESolver::~PDESolver() {
     if (d_mg_correction_) CUDA_CHECK(cudaFree(d_mg_correction_));
     if (d_mg_coarse_) CUDA_CHECK(cudaFree(d_mg_coarse_));
     if (d_mg_coarse_rhs_) CUDA_CHECK(cudaFree(d_mg_coarse_rhs_));
+
     if (h_temp_buffer_) delete[] h_temp_buffer_;
 }
 
@@ -863,70 +864,79 @@ void PDESolver::solve_timestep() {
     int blocks = (n + threads - 1) / threads;
 
     static int step_count = 0;
-    bool print_debug = (step_count <= 5);  // Print first 5 timesteps for diagnostics
+    bool print_debug = false;
     step_count++;
 
     // Diagnostics: track convergence and timing
-    int total_iters = 0;
-    int max_iters_seen = 0;
-    double total_time = 0.0;
+    std::vector<int> substrate_iters(config_.num_substrates);
+    std::vector<cudaEvent_t> starts(config_.num_substrates);
+    std::vector<cudaEvent_t> stops(config_.num_substrates);
 
     const char* substrate_names[NUM_SUBSTRATES] = {
         "O2", "IFNg", "IL2", "IL10", "TGFB", "CCL2", "ARGI", "NO", "IL12", "VEGFA"
     };
 
-    // Solve for each substrate independently using implicit CG
+    // Sequential solve for each substrate
     for (int sub = 0; sub < config_.num_substrates; sub++) {
         float D = config_.diffusion_coeffs[sub];
         float lambda = config_.decay_rates[sub];
-
-        // Pointers to this substrate's data
         float* C_curr = d_concentrations_current_ + sub * n;
         float* sources = d_sources_ + sub * n;
 
-        // Build right-hand side: rhs = C^n + dt_abm*S
-        // We solve for the entire ABM timestep at once (implicit method is unconditionally stable!)
+        // Build RHS: b = C^n + dt*S
         vector_copy<<<blocks, threads>>>(d_cg_temp_, C_curr, n);
         vector_axpy<<<blocks, threads>>>(d_cg_temp_, sources, config_.dt_abm, n);
         CUDA_CHECK(cudaDeviceSynchronize());
 
-        // Timing: start
-        cudaEvent_t start, stop;
-        cudaEventCreate(&start);
-        cudaEventCreate(&stop);
-        cudaEventRecord(start);
+        // Create timing events
+        cudaEventCreate(&starts[sub]);
+        cudaEventCreate(&stops[sub]);
+        cudaEventRecord(starts[sub]);
 
-        // Solve implicit system: (I + dt*λ - dt*D*∇²)C^(n+1) = rhs
-        // using dt = dt_abm (entire ABM timestep, no substeps needed!)
-        // Use multigrid solver (2-level V-cycle)
-        int iters = solve_multigrid(C_curr, d_cg_temp_, D, lambda, config_.dt_abm, config_.voxel_size);
+        // Use hybrid approach: multigrid for most, PCG for zero-decay (O2)
+        bool use_pcg = (lambda < 1e-10f);
+        if (use_pcg) {
+            substrate_iters[sub] = solve_implicit_cg(C_curr, d_cg_temp_, D, lambda,
+                                                     config_.dt_abm, config_.voxel_size);
+        } else {
+            substrate_iters[sub] = solve_multigrid(C_curr, d_cg_temp_, D, lambda,
+                                                   config_.dt_abm, config_.voxel_size);
+        }
 
-        // Timing: stop
-        cudaEventRecord(stop);
-        cudaEventSynchronize(stop);
+        cudaEventRecord(stops[sub]);
+    }
+
+    // Collect diagnostics
+    int total_iters = 0;
+    int max_iters_seen = 0;
+    double total_time = 0.0;
+
+    for (int sub = 0; sub < config_.num_substrates; sub++) {
+        float D = config_.diffusion_coeffs[sub];
+        float lambda = config_.decay_rates[sub];
+        int iters = substrate_iters[sub];
+
         float milliseconds = 0;
-        cudaEventElapsedTime(&milliseconds, start, stop);
-        cudaEventDestroy(start);
-        cudaEventDestroy(stop);
+        cudaEventElapsedTime(&milliseconds, starts[sub], stops[sub]);
+        cudaEventDestroy(starts[sub]);
+        cudaEventDestroy(stops[sub]);
 
         total_iters += iters;
         max_iters_seen = (iters > max_iters_seen) ? iters : max_iters_seen;
         total_time += milliseconds;
 
         if (print_debug) {
-            // Print with final residual norm and convergence status
-            const char* status = (last_residual_norm_ < 1e-4f) ? "✓" : "✗MAX";
-            printf("[MG] Step %d, %s (sub %d): %d V-cycles, %.2f ms, residual=%.2e %s (D=%.2e, λ=%.2e)\n",
-                   step_count - 1, substrate_names[sub], sub, iters, milliseconds,
-                   last_residual_norm_, status, D, lambda);
+            bool use_pcg = (lambda < 1e-10f);
+            const char* solver_name = use_pcg ? "PCG" : "MG";
+            const char* iter_unit = use_pcg ? "iters" : "V-cycles";
+            printf("[%s] Step %d, %s (sub %d): %d %s, %.2f ms (D=%.2e, λ=%.2e)\n",
+                   solver_name, step_count - 1, substrate_names[sub], sub, iters, iter_unit, milliseconds, D, lambda);
         }
     }
 
-    CUDA_CHECK(cudaDeviceSynchronize());
-
     // Print summary diagnostics
     if (print_debug) {
-        printf("[MG Summary] Step %d: total_cycles=%d, avg_cycles=%.1f, max_cycles=%d, total_time=%.2f ms\n\n",
+        printf("[Sequential Summary] Step %d: total_iters=%d, avg_iters=%.1f, max_iters=%d, total_time=%.2f ms\n\n",
                step_count - 1, total_iters, total_iters / (float)config_.num_substrates,
                max_iters_seen, total_time);
     }
