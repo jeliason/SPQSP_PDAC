@@ -4,6 +4,7 @@
 #include <cmath>
 #include <algorithm>
 #include <numeric>
+#include <nvtx3/nvToolsExt.h>
 
 namespace PDAC {
 
@@ -878,6 +879,10 @@ void PDESolver::solve_timestep() {
 
     // Sequential solve for each substrate
     for (int sub = 0; sub < config_.num_substrates; sub++) {
+        // Create named NVTX range for this substrate
+        std::string range_name = std::string("PDE ") + substrate_names[sub];
+        nvtxRangePush(range_name.c_str());
+
         float D = config_.diffusion_coeffs[sub];
         float lambda = config_.decay_rates[sub];
         float* C_curr = d_concentrations_current_ + sub * n;
@@ -904,6 +909,7 @@ void PDESolver::solve_timestep() {
         }
 
         cudaEventRecord(stops[sub]);
+        nvtxRangePop();
     }
 
     // Collect diagnostics

@@ -128,8 +128,10 @@ FLAMEGPU_AGENT_FUNCTION(tcell_scan_neighbors, flamegpu::MessageSpatial3D, flameg
     }
 
     // Build available_neighbors mask (voxels with room for T cells)
+    // Only scan Von Neumann neighbors for availability, can just skip other directions
+    // Counts for interactions already calculated
     unsigned int available_neighbors = 0;
-    for (int i = 0; i < 26; i++) {
+    for (int i = 0; i < 6; i++) {
         int dx, dy, dz;
         get_moore_direction_t(i, dx, dy, dz);
         int nx = my_x + dx;
@@ -141,7 +143,7 @@ FLAMEGPU_AGENT_FUNCTION(tcell_scan_neighbors, flamegpu::MessageSpatial3D, flameg
             int t_count = neighbor_counts[i][1] + neighbor_counts[i][2];
             int max_cap = has_cancer ? MAX_T_PER_VOXEL_WITH_CANCER : MAX_T_PER_VOXEL;
 
-            if ((t_count < max_cap) && (neighbor_counts[i][1] == 0)) {
+            if ((t_count < max_cap) && (neighbor_counts[i][3] == 0)) {
                 available_neighbors |= (1u << i);
             }
         }
@@ -229,15 +231,11 @@ FLAMEGPU_AGENT_FUNCTION(tcell_state_step, flamegpu::MessageNone, flamegpu::Messa
     const float IFNg_release_rate = FLAMEGPU->environment.getProperty<float>("PARAM_IFNG_RELEASE");
     const float IL2_release_rate = FLAMEGPU->environment.getProperty<float>("PARAM_IL2_RELEASE");
     const float IL2_uptake_rate = FLAMEGPU->environment.getProperty<float>("PARAM_IL2_UPTAKE");
-
     const float param_cell = FLAMEGPU->environment.getProperty<float>("PARAM_CELL");
     const float exhaust_base_Treg = FLAMEGPU->environment.getProperty<float>("PARAM_EXHUAST_BASE_TREG");
-
-
     const float exhaust_base_PDL1 = FLAMEGPU->environment.getProperty<float>("PARAM_EXHUAST_BASE_PDL1");
     const float PD1_PDL1_half = FLAMEGPU->environment.getProperty<float>("PARAM_PD1_PDL1_HALF");
     const float n_PD1_PDL1 = FLAMEGPU->environment.getProperty<float>("PARAM_N_PD1_PDL1");
-
 
     // Update IL2 exposure (simplified - would need grid coupling for full implementation)
     float IL2 = FLAMEGPU->getVariable<float>("local_IL2");
@@ -286,7 +284,8 @@ FLAMEGPU_AGENT_FUNCTION(tcell_state_step, flamegpu::MessageNone, flamegpu::Messa
 
         bool exhausted = false;
         if (neighbor_Treg > 0){
-            const float q_exh = static_cast<float>(neighbor_Treg) / (neighbor_all + param_cell);
+            float denominator = neighbor_all + param_cell;
+            const float q_exh = (denominator > 1e-12f) ? static_cast<float>(neighbor_Treg) / denominator : 1.0f;  // Prevent division by zero
             const float p_exhaust_treg = 1.0f - powf(exhaust_base_Treg, q_exh);
 
             if (FLAMEGPU->random.uniform<float>() < p_exhaust_treg){
@@ -375,7 +374,7 @@ FLAMEGPU_AGENT_FUNCTION(tcell_select_move_target, flamegpu::MessageNone, flamegp
     // Density too high, do not move, but still broadcast intent for conflict resolution
     if (FLAMEGPU->random.uniform<float>() < ECM_sat) {
         // Output dummy message (required)
-        FLAMEGPU->message_out.setVariable<int>("agent_type", CELL_TYPE_CANCER);
+        FLAMEGPU->message_out.setVariable<int>("agent_type", CELL_TYPE_T);
         FLAMEGPU->message_out.setVariable<unsigned int>("agent_id", FLAMEGPU->getID());
         FLAMEGPU->message_out.setVariable<int>("intent_action", INTENT_NONE);
         FLAMEGPU->message_out.setVariable<int>("target_x", -1);
@@ -566,17 +565,18 @@ FLAMEGPU_AGENT_FUNCTION(tcell_select_divide_target, flamegpu::MessageNone, flame
         return flamegpu::ALIVE;
     }
 
-    int target_x = -1, target_y = -1, target_z = -1;
-    int intent_action = INTENT_NONE;
-
     // Use cached available_neighbors mask
-    const unsigned int available = FLAMEGPU->getVariable<unsigned int>("available_neighbors");
-    int num_available = __popc(available);
+    const unsigned int available_all = FLAMEGPU->getVariable<unsigned int>("available_neighbors");
+    const unsigned int available = available_all & VON_NEUMANN_MASK_T;  // Only face neighbors (6 directions)
+    // Count available Von Neumann neighbors
+    int num_available = __popc(available);  // Population count (number of set bits)
+    int target_x = my_x, target_y = my_y, target_z = my_z;
+    int intent_action = INTENT_NONE;
 
     if (num_available > 0) {
         int selected = FLAMEGPU->random.uniform<int>(0, num_available - 1);
         int count = 0;
-        for (int i = 0; i < 26; i++) {
+        for (int i = 0; i < 6; i++) {
             if (available & (1u << i)) {
                 if (count == selected) {
                     int dx, dy, dz;
@@ -660,7 +660,7 @@ FLAMEGPU_AGENT_FUNCTION(tcell_execute_divide, flamegpu::MessageSpatial3D, flameg
             if ((msg_agent_type == CELL_TYPE_T || msg_agent_type == CELL_TYPE_TREG) &&
                 msg_intent == INTENT_DIVIDE) {
                 // Skip self
-                if (msg_src_x == my_x && msg_src_y == my_y && msg_src_z == my_z) {
+                if (msg_id == my_id) {
                     continue;
                 }
                 // Count agents with higher priority
@@ -672,6 +672,7 @@ FLAMEGPU_AGENT_FUNCTION(tcell_execute_divide, flamegpu::MessageSpatial3D, flameg
         }
     }
 
+    // TCELL should not only check how many are trying to move there, but what is already there
     bool can_divide = (higher_priority_count < MAX_T_PER_VOXEL);
 
     if (!can_divide) {
@@ -685,50 +686,39 @@ FLAMEGPU_AGENT_FUNCTION(tcell_execute_divide, flamegpu::MessageSpatial3D, flameg
     // Proceed with division
     const int cell_state = FLAMEGPU->getVariable<int>("cell_state");
     const int divide_limit = FLAMEGPU->getVariable<int>("divide_limit");
-    const int div_interval = FLAMEGPU->environment.getProperty<int>("PARAM_TCELL_DIV_INTERVAL");
+    const float IL2_exposure = FLAMEGPU->getVariable<float>("IL2_exposure");
+    
+    const int div_interval = FLAMEGPU->environment.getProperty<int>("PARAM_TCELL_DIV_INTERNAL");
     const float IL2_release_time = FLAMEGPU->environment.getProperty<float>("PARAM_TCELL_IL2_RELEASE_TIME");
-    const float IFN_release_time = FLAMEGPU->environment.getProperty<float>("PARAM_TCELL_IFN_RELEASE_TIME");
-    const float tcell_life_mean = FLAMEGPU->environment.getProperty<float>("PARAM_TCELL_LIFE_MEAN");
+    const float tcell_life_mean = FLAMEGPU->environment.getProperty<float>("PARAM_T_CELL_LIFE_MEAN_SLICE");
 
     // Calculate daughter life (exponential distribution)
     const float rnd = FLAMEGPU->random.uniform<float>();
     const int daughter_life = static_cast<int>(tcell_life_mean * logf(1.0f / (rnd + 0.0001f)) + 0.5f);
 
     // Create daughter cell
-    FLAMEGPU->agent_out.setVariable<unsigned int>("id", 0u);
     FLAMEGPU->agent_out.setVariable<int>("x", target_x);
     FLAMEGPU->agent_out.setVariable<int>("y", target_y);
     FLAMEGPU->agent_out.setVariable<int>("z", target_z);
     FLAMEGPU->agent_out.setVariable<int>("cell_state", cell_state);
-    FLAMEGPU->agent_out.setVariable<int>("divide_flag", 1);
+    FLAMEGPU->agent_out.setVariable<int>("divide_flag", 0);
     FLAMEGPU->agent_out.setVariable<int>("divide_cd", div_interval);
     FLAMEGPU->agent_out.setVariable<int>("divide_limit", divide_limit - 1);
-    FLAMEGPU->agent_out.setVariable<float>("IL2_exposure", 0.0f);
+    FLAMEGPU->agent_out.setVariable<float>("IL2_exposure", IL2_exposure);
     FLAMEGPU->agent_out.setVariable<float>("IL2_release_remain", IL2_release_time);
-    FLAMEGPU->agent_out.setVariable<float>("IFN_release_remain", IFN_release_time);
-    FLAMEGPU->agent_out.setVariable<int>("neighbor_cancer_count", 0);
-    FLAMEGPU->agent_out.setVariable<int>("neighbor_Treg_count", 0);
-    FLAMEGPU->agent_out.setVariable<int>("neighbor_all_count", 0);
-    FLAMEGPU->agent_out.setVariable<float>("max_neighbor_PDL1", 0.0f);
-    FLAMEGPU->agent_out.setVariable<int>("found_progenitor", 0);
     FLAMEGPU->agent_out.setVariable<int>("life", daughter_life > 0 ? daughter_life : 1);
-    FLAMEGPU->agent_out.setVariable<int>("dead", 0);
-    FLAMEGPU->agent_out.setVariable<int>("intent_action", INTENT_NONE);
-    FLAMEGPU->agent_out.setVariable<int>("target_x", -1);
-    FLAMEGPU->agent_out.setVariable<int>("target_y", -1);
-    FLAMEGPU->agent_out.setVariable<int>("target_z", -1);
-    FLAMEGPU->agent_out.setVariable<unsigned int>("available_neighbors", 0u);
 
     // Set release rates based on state
-    if (cell_state == T_CELL_CYT) {
-        FLAMEGPU->agent_out.setVariable<float>("IFNg_release_rate",
-            FLAMEGPU->environment.getProperty<float>("PARAM_TCELL_IFNG_RELEASE_RATE"));
-        FLAMEGPU->agent_out.setVariable<float>("IL2_release_rate",
-            FLAMEGPU->environment.getProperty<float>("PARAM_TCELL_IL2_RELEASE_RATE"));
-    } else {
-        FLAMEGPU->agent_out.setVariable<float>("IFNg_release_rate", 0.0f);
-        FLAMEGPU->agent_out.setVariable<float>("IL2_release_rate", 0.0f);
-    }
+    // These will update on the next state step do not worry here
+    // if (cell_state == T_CELL_CYT) {
+    //     FLAMEGPU->agent_out.setVariable<float>("IFNg_release_rate",
+    //         FLAMEGPU->environment.getProperty<float>("PARAM_TCELL_IFNG_RELEASE_RATE"));
+    //     FLAMEGPU->agent_out.setVariable<float>("IL2_release_rate",
+    //         FLAMEGPU->environment.getProperty<float>("PARAM_TCELL_IL2_RELEASE_RATE"));
+    // } else {
+    //     FLAMEGPU->agent_out.setVariable<float>("IFNg_release_rate", 0.0f);
+    //     FLAMEGPU->agent_out.setVariable<float>("IL2_release_rate", 0.0f);
+    // }
 
     // Update parent
     FLAMEGPU->setVariable<int>("divide_limit", divide_limit - 1);
@@ -744,29 +734,11 @@ FLAMEGPU_AGENT_FUNCTION(tcell_execute_divide, flamegpu::MessageSpatial3D, flameg
 }
 
 FLAMEGPU_AGENT_FUNCTION(tcell_update_chemicals, flamegpu::MessageNone, flamegpu::MessageNone) {
-    // Get agent position
-    const int x = FLAMEGPU->getVariable<int>("x");
-    const int y = FLAMEGPU->getVariable<int>("y");
-    const int z = FLAMEGPU->getVariable<int>("z");
-    
-    // Get grid dimensions
-    const int grid_x = FLAMEGPU->environment.getProperty<int>("grid_size_x");
-    const int grid_y = FLAMEGPU->environment.getProperty<int>("grid_size_y");
-    const int grid_z = FLAMEGPU->environment.getProperty<int>("grid_size_z");
-    
-    // Calculate flat voxel index
-    const int voxel_idx = z * (grid_x * grid_y) + y * grid_x + x;
-    
-    // ========== READ CHEMICAL CONCENTRATIONS FROM PDE ==========
-    const float* d_IL2 = reinterpret_cast<const float*>(
-        FLAMEGPU->environment.getProperty<unsigned long long>("pde_concentration_ptr_2"));
-    
-    // Read concentrations at this voxel
-    float local_IL2 = d_IL2[voxel_idx];
-    // Note: NIVO is managed by QSP model on CPU, not in PDE
+    // ========== READ CHEMICAL CONCENTRATIONS FROM AGENT VARIABLES ==========
+    // These were already set by the host function update_agent_chemicals in layer 6
+    // No need to access PDE memory directly!
 
-    // Set local concentration variables
-    FLAMEGPU->setVariable<float>("local_IL2", local_IL2);
+    float local_IL2 = FLAMEGPU->getVariable<float>("local_IL2");
     
     // ========== COMPUTE DERIVED STATES ==========
     

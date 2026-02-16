@@ -288,7 +288,9 @@ void GPUParam::populateFlameGPUEnvironment(flamegpu::EnvironmentDescription& env
     env.newProperty<float>("PARAM_O2_DECAY_RATE", getFloat(PARAM_O2_DECAY_RATE));
 
     env.newProperty<float>("PARAM_IFNG_RELEASE", getFloat(PARAM_IFNG_RELEASE));              // Cyt TCells
-    env.newProperty<float>("PARAM_IL2_RELEASE", getFloat(PARAM_IL2_RELEASE));                // Cyt TCells
+    float il2_val = getFloat(PARAM_IL2_RELEASE);
+    std::cout << "DEBUG: Loading PARAM_IL2_RELEASE = " << il2_val << std::endl;
+    env.newProperty<float>("PARAM_IL2_RELEASE", il2_val);                // Cyt TCells
     env.newProperty<float>("PARAM_CCL2_RELEASE", getFloat(PARAM_CCL2_RELEASE));              // Cancer
     env.newProperty<float>("PARAM_ARGI_RELEASE", getFloat(PARAM_ARGI_RELEASE));
     env.newProperty<float>("PARAM_NO_RELEASE", getFloat(PARAM_NO_RELEASE));

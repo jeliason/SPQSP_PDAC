@@ -186,23 +186,110 @@ void collect_chemical_from_agents(
 }
 
 // ============================================================================
+// Helper: Calculate Chemical Gradient for Agents
+// ============================================================================
+// Calculates spatial gradient of a chemical and stores as agent variables
+// More efficient than having each agent calculate independently
+void calculate_chemical_gradient_for_agents(
+    flamegpu::HostAPI& host_api,
+    const std::string& agent_name,
+    int substrate_idx,
+    const std::string& var_prefix)  // e.g., "CCL2_gradient" -> sets CCL2_gradient_x, _y, _z
+{
+    if (!g_pde_solver) return;
+
+    // Get agent API
+    flamegpu::HostAgentAPI agent_api = host_api.agent(agent_name);
+    unsigned int agent_count = agent_api.count();
+    if (agent_count == 0) return;
+    
+    const int grid_x = host_api.environment.getProperty<int>("grid_size_x");
+    const int grid_y = host_api.environment.getProperty<int>("grid_size_y");
+    const int grid_z = host_api.environment.getProperty<int>("grid_size_z");
+    const float voxel_size = host_api.environment.getProperty<float>("voxel_size");
+    const float dx = voxel_size * 1.0e-4f;  // Convert µm to cm
+
+    // Get PDE concentration data
+    const float* d_chem = g_pde_solver->get_device_concentration_ptr(substrate_idx);
+    const int total_voxels = grid_x * grid_y * grid_z;
+
+    // Copy to host for gradient calculation
+    std::vector<float> h_chem(total_voxels);
+    cudaMemcpy(h_chem.data(), d_chem, total_voxels * sizeof(float), cudaMemcpyDeviceToHost);
+
+    // Iterate through agents and calculate gradient at their position
+    flamegpu::DeviceAgentVector agents = agent_api.getPopulationData();
+    for (auto agent : agents) {  // Note: can't use reference with DeviceAgentVector
+        int x = agent.getVariable<int>("x");
+        int y = agent.getVariable<int>("y");
+        int z = agent.getVariable<int>("z");
+        int voxel_idx = z * (grid_x * grid_y) + y * grid_x + x;
+
+        float grad_x = 0.0f, grad_y = 0.0f, grad_z = 0.0f;
+
+        // X gradient (central difference where possible)
+        if (x > 0 && x < grid_x - 1) {
+            int idx_left = voxel_idx - 1;
+            int idx_right = voxel_idx + 1;
+            grad_x = (h_chem[idx_right] - h_chem[idx_left]) / (2.0f * dx);
+        } else if (x == 0 && grid_x > 1) {
+            // Forward difference at left boundary
+            grad_x = (h_chem[voxel_idx + 1] - h_chem[voxel_idx]) / dx;
+        } else if (x == grid_x - 1 && grid_x > 1) {
+            // Backward difference at right boundary
+            grad_x = (h_chem[voxel_idx] - h_chem[voxel_idx - 1]) / dx;
+        }
+
+        // Y gradient
+        if (y > 0 && y < grid_y - 1) {
+            int idx_front = voxel_idx - grid_x;
+            int idx_back = voxel_idx + grid_x;
+            grad_y = (h_chem[idx_back] - h_chem[idx_front]) / (2.0f * dx);
+        } else if (y == 0 && grid_y > 1) {
+            grad_y = (h_chem[voxel_idx + grid_x] - h_chem[voxel_idx]) / dx;
+        } else if (y == grid_y - 1 && grid_y > 1) {
+            grad_y = (h_chem[voxel_idx] - h_chem[voxel_idx - grid_x]) / dx;
+        }
+
+        // Z gradient
+        if (z > 0 && z < grid_z - 1) {
+            int idx_bottom = voxel_idx - grid_x * grid_y;
+            int idx_top = voxel_idx + grid_x * grid_y;
+            grad_z = (h_chem[idx_top] - h_chem[idx_bottom]) / (2.0f * dx);
+        } else if (z == 0 && grid_z > 1) {
+            grad_z = (h_chem[voxel_idx + grid_x * grid_y] - h_chem[voxel_idx]) / dx;
+        } else if (z == grid_z - 1 && grid_z > 1) {
+            grad_z = (h_chem[voxel_idx] - h_chem[voxel_idx - grid_x * grid_y]) / dx;
+        }
+
+        // Set gradient variables
+        agent.setVariable<float>(var_prefix + "_x", grad_x);
+        agent.setVariable<float>(var_prefix + "_y", grad_y);
+        agent.setVariable<float>(var_prefix + "_z", grad_z);
+    }
+}
+
+// ============================================================================
 // Host Function: Update Agent Chemicals (Read from PDE)
 // ============================================================================
 
 FLAMEGPU_HOST_FUNCTION(update_agent_chemicals) {
-    if (!g_pde_solver) return;
-    
+    nvtxRangePush("Update Agent Chemicals");
+    if (!g_pde_solver) {
+        nvtxRangePop();
+        return;
+    }
+
     // Read O2
     read_chemical_to_agents(*FLAMEGPU, AGENT_CANCER_CELL, CHEM_O2, "local_O2");
-    read_chemical_to_agents(*FLAMEGPU, AGENT_TREG, CHEM_O2, "local_O2");
     read_chemical_to_agents(*FLAMEGPU, AGENT_MDSC, CHEM_O2, "local_O2");
     
     // Read IFN-gamma
     read_chemical_to_agents(*FLAMEGPU, AGENT_CANCER_CELL, CHEM_IFN, "local_IFNg");
+    read_chemical_to_agents(*FLAMEGPU, AGENT_TREG, CHEM_IFN, "local_IFNg");
     
     // Read IL-2
     read_chemical_to_agents(*FLAMEGPU, AGENT_TCELL, CHEM_IL2, "local_IL2");
-    read_chemical_to_agents(*FLAMEGPU, AGENT_TREG, CHEM_IL2, "local_IL2");
     
     // Read IL-10 (immunosuppressive)
     
@@ -220,7 +307,6 @@ FLAMEGPU_HOST_FUNCTION(update_agent_chemicals) {
 
     // Read NO (MDSC-produced, T cell response modifier)
     read_chemical_to_agents(*FLAMEGPU, AGENT_CANCER_CELL, CHEM_NO, "local_NO");
-    read_chemical_to_agents(*FLAMEGPU, AGENT_TREG, CHEM_NO, "local_NO");
 
     // Read IL-12 (macrophage-produced, T cell activator)
 
@@ -229,11 +315,25 @@ FLAMEGPU_HOST_FUNCTION(update_agent_chemicals) {
 
     // Note: Nivolumab and Cabozantinib are now handled by QSP compartments
     // They will be transferred to GPU environment properties by the QSP coupling wrapper
-    
+
     unsigned int step = FLAMEGPU->environment.getProperty<unsigned int>("current_step");
     if (step % 50 == 0) {
         std::cout << "Updated agent chemicals from PDE (step " << step << ")" << std::endl;
     }
+
+    // Force synchronization to catch any CUDA errors immediately
+    cudaError_t err = cudaDeviceSynchronize();
+    if (err != cudaSuccess) {
+        std::cerr << "CUDA error after update_agent_chemicals: " << cudaGetErrorString(err) << std::endl;
+    }
+
+    // ========== CALCULATE CHEMICAL GRADIENTS FOR CHEMOTAXIS ==========
+    // Pre-compute gradients on host side to avoid redundant per-agent calculations
+    calculate_chemical_gradient_for_agents(*FLAMEGPU, AGENT_MDSC, CHEM_CCL2, "CCL2_gradient");
+    // Add more gradient calculations here as needed for other agent types:
+    // calculate_chemical_gradient_for_agents(*FLAMEGPU, AGENT_TCELL, CHEM_IL2, "IL2_gradient");
+
+    nvtxRangePop();
 }
 
 // ============================================================================
@@ -259,13 +359,13 @@ FLAMEGPU_HOST_FUNCTION(collect_agent_sources) {
     collect_chemical_from_agents(*FLAMEGPU, AGENT_TCELL, CHEM_IL2, "IL2_release_rate");
     
     // Collect IL-2 consumption from Tregs (should be negative)
-    collect_chemical_from_agents(*FLAMEGPU, AGENT_TREG, CHEM_IL2, "IL2_uptake_rate");
-    
+    collect_chemical_from_agents(*FLAMEGPU, AGENT_TREG, CHEM_IL2, "IL2_release_rate");
+
     // Collect IL-10 production from Tregs
-    collect_chemical_from_agents(*FLAMEGPU, AGENT_TREG, CHEM_IL10, "PARAM_TREG_IL10_RELEASE");
-    
+    collect_chemical_from_agents(*FLAMEGPU, AGENT_TREG, CHEM_IL10, "IL10_release_rate");
+
     // Collect TGF-beta production from Tregs
-    collect_chemical_from_agents(*FLAMEGPU, AGENT_TREG, CHEM_TGFB, "PARAM_TREG_TGFB_RELEASE");
+    collect_chemical_from_agents(*FLAMEGPU, AGENT_TREG, CHEM_TGFB, "TGFB_release_rate");
     collect_chemical_from_agents(*FLAMEGPU, AGENT_CANCER_CELL, CHEM_TGFB, "TGFB_release_rate");
     
     // Collect CCL2 production from cancer cells
@@ -275,10 +375,10 @@ FLAMEGPU_HOST_FUNCTION(collect_agent_sources) {
     collect_chemical_from_agents(*FLAMEGPU, AGENT_CANCER_CELL, CHEM_VEGFA, "VEGFA_release_rate");
 
     // Collect NO production from MDSCs
-    collect_chemical_from_agents(*FLAMEGPU, AGENT_MDSC, CHEM_NO, "PARAM_NO_RELEASE");
+    collect_chemical_from_agents(*FLAMEGPU, AGENT_MDSC, CHEM_NO, "NO_release_rate");
 
     // Collect ArgI production from MDSCs
-    collect_chemical_from_agents(*FLAMEGPU, AGENT_MDSC, CHEM_ARGI, "PARAM_ARGI_RELEASE");
+    collect_chemical_from_agents(*FLAMEGPU, AGENT_MDSC, CHEM_ARGI, "ArgI_release_rate");
 
     unsigned int step = FLAMEGPU->environment.getProperty<unsigned int>("current_step");
     if (step % 50 == 0) {
@@ -293,14 +393,19 @@ FLAMEGPU_HOST_FUNCTION(collect_agent_sources) {
 // ============================================================================
 
 FLAMEGPU_HOST_FUNCTION(solve_pde_step) {
-    if (!g_pde_solver) return;
-    
+    nvtxRangePush("PDE Solve");
+    if (!g_pde_solver) {
+        nvtxRangePop();
+        return;
+    }
+
     g_pde_solver->solve_timestep();
-    
+
     unsigned int step = FLAMEGPU->environment.getProperty<unsigned int>("current_step");
     if (step % 50 == 0) {
         std::cout << "PDE solved for step " << step << std::endl;
     }
+    nvtxRangePop();
 }
 
 // ============================================================================

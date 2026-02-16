@@ -63,8 +63,6 @@ void defineCancerCellAgent(flamegpu::ModelDescription& model, bool include_state
     cancer_cell.newVariable<float>("local_IFNg", 0.0f);
 
     // Molecular state (affects behavior)
-    cancer_cell.newVariable<float>("PDL1_surface", 0.0f);      // PDL1 expression level [0-1]
-    cancer_cell.newVariable<float>("PDL1_syn_rate", 0.0f);     // Current synthesis rate
     cancer_cell.newVariable<float>("PDL1_syn", 0.0f);
     cancer_cell.newVariable<int>("hypoxic", 0);                // Boolean: O2 below threshold
 
@@ -244,38 +242,42 @@ void defineTRegAgent(flamegpu::ModelDescription& model, bool include_state_divid
     treg.newVariable<int>("y");
     treg.newVariable<int>("z");
 
+    // State: TCD4_TREG=0, TCD4_TH=1
+    treg.newVariable<int>("cell_state", TCD4_TREG);
+
     // Division control
     treg.newVariable<int>("divide_flag", 0);
     treg.newVariable<int>("divide_cd", 0);
-    treg.newVariable<int>("divide_limit", 10);
+    treg.newVariable<int>("divide_limit", 0);
 
      // Local chemical concentrations
-    treg.newVariable<float>("local_O2", 0.0f);
-    treg.newVariable<float>("local_IL2", 0.0f);          // Tregs respond to IL2
-    treg.newVariable<float>("local_TGFB", 0.0f);         // Positive feedback
-    treg.newVariable<float>("local_ArgI", 0.0f);         // From MDSCs (immune suppression)
-    treg.newVariable<float>("local_NO", 0.0f);           // From MDSCs (immune suppression)
+    treg.newVariable<float>("local_TGFB", 0.0f);
+    treg.newVariable<float>("local_IFNg", 0.0f); // might need to be gradient instead
+    treg.newVariable<float>("local_ArgI", 0.0f);
 
     // Chemical production (Tregs are major source of IL10 and TGF-beta)
     treg.newVariable<float>("IL10_release_rate", 0.0f);
     treg.newVariable<float>("TGFB_release_rate", 0.0f);
-    treg.newVariable<float>("IL2_consumption_rate", 0.0f); // Tregs consume IL2
+    treg.newVariable<float>("IL2_release_rate",0.0f);
+
+    treg.newVariable<float>("TGFB_release_remain", 0.0f);
 
     // Molecular state (affects behavior)
     treg.newVariable<float>("PDL1_syn", 0.0f);
+    treg.newVariable<float>("CTLA4", 0.0f);
 
     // Molecular exposure
     treg.newVariable<float>("IL2_exposure", 0.0f);
 
     // Functional state
     treg.newVariable<float>("suppression_strength", 1.0f); // Suppressive capacity [0-1]
-    treg.newVariable<int>("can_proliferate", 0);
 
     // Neighbor counts (computed via messaging)
     treg.newVariable<int>("neighbor_Tcell_count", 0);
     treg.newVariable<int>("neighbor_Treg_count", 0);
     treg.newVariable<int>("neighbor_cancer_count", 0);
     treg.newVariable<int>("neighbor_all_count", 0);
+    treg.newVariable<int>("found_progenitor", 0);
 
     // Cached bitmask of available neighbor voxels
     treg.newVariable<unsigned int>("available_neighbors", 0u);
@@ -336,6 +338,9 @@ void defineMDSCAgent(flamegpu::ModelDescription& model, bool include_state) {
     mdsc.newVariable<int>("z");
 
     mdsc.newVariable<float>("local_O2", 0.0f);
+    mdsc.newVariable<float>("local_IFNg", 0.0f);
+    mdsc.newVariable<float>("local_IL2", 0.0f);
+    mdsc.newVariable<float>("local_IL10", 0.0f);
     mdsc.newVariable<float>("local_CCL2", 0.0f);         // Attracted to CCL2
     mdsc.newVariable<float>("local_TGFB", 0.0f);         // Can be activated by TGF-beta
 

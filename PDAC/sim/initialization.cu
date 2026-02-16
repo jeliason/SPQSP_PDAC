@@ -150,37 +150,6 @@ void initializeCancerCellCluster(
                 agent.setVariable<int>("divideFlag", 1);
                 agent.setVariable<int>("divideCountRemaining", progenitor_div_max);
                 agent.setVariable<unsigned int>("stemID", is_stem ? id : 0);
-                
-                // Chemical state variables (from PDE coupling)
-                agent.setVariable<float>("local_NO", 0.001f);
-                agent.setVariable<float>("local_ArgI", 0.0f);
-                agent.setVariable<float>("local_TGFB", 0.0f);
-                agent.setVariable<float>("local_O2", 0.0f);
-                agent.setVariable<float>("local_IFNg", 0.0f);
-
-                agent.setVariable<float>("PDL1_surface", 0.1f);
-                agent.setVariable<float>("PDL1_syn_rate", 0.0f);
-                agent.setVariable<float>("PDL1_syn", 0.1f);
-                agent.setVariable<float>("O2_uptake_rate", 0.0f);
-                agent.setVariable<int>("hypoxic", 0);
-                agent.setVariable<float>("cabo_effect", 0.0f);
-                
-                // Neighbor counts
-                agent.setVariable<int>("neighbor_Teff_count", 0);
-                agent.setVariable<int>("neighbor_Treg_count", 0);
-                agent.setVariable<int>("neighbor_cancer_count", 0);
-                agent.setVariable<int>("neighbor_MDSC_count", 0);
-                agent.setVariable<unsigned int>("available_neighbors", 0u);
-                
-                // Lifecycle
-                agent.setVariable<int>("life", 0);
-                agent.setVariable<int>("dead", 0);
-                
-                // Intent
-                agent.setVariable<int>("intent_action", INTENT_NONE);
-                agent.setVariable<int>("target_x", x);
-                agent.setVariable<int>("target_y", y);
-                agent.setVariable<int>("target_z", z);
 
                 count++;
             }
@@ -258,7 +227,7 @@ void initializeTCells(
     int grid_x, int grid_y, int grid_z,
     int tumor_radius, int num_tcells,
     float tcell_life_mean, int div_limit,
-    float IL2_release_time, float IFNg_release_time)
+    float IL2_release_time, int tcell_div_interval)
 {
     const int cx = grid_x / 2;
     const int cy = grid_y / 2;
@@ -297,41 +266,23 @@ void initializeTCells(
         tcell_agents.push_back();
         flamegpu::AgentVector::Agent agent = tcell_agents.back();
 
+        float random_factor = (static_cast<float>(rand()) / RAND_MAX);  // Range: [0.0, 1.0]
+        int div_cd = static_cast<int>((tcell_div_interval * random_factor) + 0.5);
+
         // Basic identity and state
         agent.setVariable<int>("x", x);
         agent.setVariable<int>("y", y);
         agent.setVariable<int>("z", z);
         agent.setVariable<int>("cell_state", T_CELL_EFF);
         agent.setVariable<int>("divide_flag", 0);
-        agent.setVariable<int>("divide_cd", 0);
+        agent.setVariable<int>("divide_cd", div_cd);
         agent.setVariable<int>("divide_limit", div_limit);
         
         // Chemical production/exposure
-        agent.setVariable<float>("IL2_exposure", 0.0f);
         agent.setVariable<float>("IL2_release_remain", IL2_release_time);
-        agent.setVariable<float>("IFNg_release_rate", 0.0f);
-        agent.setVariable<float>("IL2_release_rate", 0.0f);
-        
-        // Local chemical concentrations (from PDE)
-        agent.setVariable<float>("local_IL2", 0.0f);
-        
-        // Neighbor counts
-        agent.setVariable<int>("neighbor_cancer_count", 0);
-        agent.setVariable<int>("neighbor_Treg_count", 0);
-        agent.setVariable<int>("neighbor_all_count", 0);
-        agent.setVariable<float>("max_neighbor_PDL1", 0.0f);
-        agent.setVariable<int>("found_progenitor", 0);
-        agent.setVariable<unsigned int>("available_neighbors", 0u);
         
         // Lifecycle
         agent.setVariable<int>("life", life);
-        agent.setVariable<int>("dead", 0);
-        
-        // Intent
-        agent.setVariable<int>("intent_action", INTENT_NONE);
-        agent.setVariable<int>("target_x", -1);
-        agent.setVariable<int>("target_y", -1);
-        agent.setVariable<int>("target_z", -1);
 
         placed++;
     }
@@ -347,7 +298,7 @@ void initializeTRegs(
     flamegpu::AgentVector& treg_agents,
     int grid_x, int grid_y, int grid_z,
     int tumor_radius, int num_tregs,
-    float treg_life_mean, int div_limit)
+    float treg_life_mean, int div_limit, int treg_div_interval)
 {
     const int cx = grid_x / 2;
     const int cy = grid_y / 2;
@@ -382,41 +333,22 @@ void initializeTRegs(
         treg_agents.push_back();
         flamegpu::AgentVector::Agent agent = treg_agents.back();
 
+        float random_factor = (static_cast<float>(rand()) / RAND_MAX);  // Range: [0.0, 1.0]
+        int div_cd = static_cast<int>((treg_div_interval * random_factor) + 0.5);
+
         // Basic identity
         agent.setVariable<int>("x", x);
         agent.setVariable<int>("y", y);
         agent.setVariable<int>("z", z);
         agent.setVariable<int>("divide_flag", 0);
-        agent.setVariable<int>("divide_cd", 0);
+        agent.setVariable<int>("divide_cd", div_cd);
         agent.setVariable<int>("divide_limit", div_limit);
-        
-        // Chemical variables
-        agent.setVariable<float>("local_O2", 0.001f);
-        agent.setVariable<float>("local_IL2", 0.0f);
-        agent.setVariable<float>("local_TGFB", 0.0f);
-        agent.setVariable<float>("IL10_release_rate", 0.0f);
-        agent.setVariable<float>("TGFB_release_rate", 0.0f);
-        agent.setVariable<float>("IL2_consumption_rate", 0.0f);
-        agent.setVariable<float>("IL2_exposure", 0.0f);
-        agent.setVariable<float>("suppression_strength", 1.0f);
-        agent.setVariable<int>("can_proliferate", 0);
-        
-        // Neighbor counts
-        agent.setVariable<int>("neighbor_Tcell_count", 0);
-        agent.setVariable<int>("neighbor_Treg_count", 0);
-        agent.setVariable<int>("neighbor_cancer_count", 0);
-        agent.setVariable<int>("neighbor_all_count", 0);
-        agent.setVariable<unsigned int>("available_neighbors", 0u);
-        
+
         // Lifecycle
         agent.setVariable<int>("life", life);
-        agent.setVariable<int>("dead", 0);
-        
-        // Intent
-        agent.setVariable<int>("intent_action", INTENT_NONE);
-        agent.setVariable<int>("target_x", -1);
-        agent.setVariable<int>("target_y", -1);
-        agent.setVariable<int>("target_z", -1);
+
+        // State
+        agent.setVariable<int>("cell_state", TCD4_TH); // initialize as T-Helper cells
 
         placed++;
     }
@@ -525,9 +457,10 @@ void initializeAllAgents(
     const float tcell_life = model.Environment().getProperty<float>("PARAM_T_CELL_LIFE_MEAN_SLICE");
     const int tcell_div_limit = model.Environment().getProperty<int>("PARAM_TCELL_DIV_LIMIT");
     const float IL2_release_time = model.Environment().getProperty<float>("PARAM_TCELL_IL2_RELEASE_TIME");
-    const float IFN_release_time = model.Environment().getProperty<float>("PARAM_TCELL_IFNG_RELEASE_TIME");
+    const int tcell_div_interval = model.Environment().getProperty<int>("PARAM_TCELL_DIV_INTERNAL");
     const float treg_life = model.Environment().getProperty<float>("PARAM_TCD4_LIFE_MEAN_SLICE");
     const int treg_div_limit = model.Environment().getProperty<int>("PARAM_TCD4_DIV_LIMIT");
+    const int treg_div_interval = model.Environment().getProperty<int>("PARAM_TCD4_DIV_INTERNAL");
     const float mdsc_life = model.Environment().getProperty<float>("PARAM_MDSC_LIFE_MEAN_SLICE");
     
     // Initialize cancer cells
@@ -548,20 +481,20 @@ void initializeAllAgents(
             config.grid_x, config.grid_y, config.grid_z,
             config.cluster_radius, config.num_tcells, 
             tcell_life, tcell_div_limit,
-            IL2_release_time, IFN_release_time);
+            IL2_release_time, tcell_div_interval);
         simulation.setPopulationData(tcell_pop);
     }
     
-    // // Initialize TRegs
-    // if (config.num_tregs > 0) {
-    //     flamegpu::AgentVector treg_pop(model.Agent(AGENT_TREG));
-    //     initializeTRegs(
-    //         treg_pop, 
-    //         config.grid_x, config.grid_y, config.grid_z,
-    //         config.cluster_radius, config.num_tregs, 
-    //         treg_life, treg_div_limit);
-    //     simulation.setPopulationData(treg_pop);
-    // }
+    // Initialize TRegs
+    if (config.num_tregs > 0) {
+        flamegpu::AgentVector treg_pop(model.Agent(AGENT_TREG));
+        initializeTRegs(
+            treg_pop, 
+            config.grid_x, config.grid_y, config.grid_z,
+            config.cluster_radius, config.num_tregs, 
+            treg_life, treg_div_limit, treg_div_interval);
+        simulation.setPopulationData(treg_pop);
+    }
     
     // // Initialize MDSCs
     // if (config.num_mdscs > 0) {

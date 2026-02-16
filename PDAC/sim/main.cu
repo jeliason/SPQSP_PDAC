@@ -5,6 +5,7 @@
 #include <sstream>
 #include <vector>
 #include <iomanip>
+#include <nvtx3/nvToolsExt.h>
 
 #include "../core/common.cuh"
 #include "../pde/pde_integration.cuh"
@@ -469,8 +470,20 @@ int main(int argc, const char** argv) {
     
     // ========== RUN SIMULATION ==========
     std::cout << "\n=== Starting Simulation ===" << std::endl;
-    simulation.simulate();
-    
+
+    // Manual stepping loop with NVTX markers for profiling
+    const unsigned int total_steps = simulation.SimulationConfig().steps;
+    for (unsigned int i = 0; i < total_steps; i++) {
+        nvtxRangePush("ABM Step");
+        bool continue_sim = simulation.step();
+        nvtxRangePop();
+
+        if (!continue_sim) {
+            std::cout << "Simulation terminated early at step " << i << std::endl;
+            break;
+        }
+    }
+
     // ========== REPORT RESULTS ==========
     std::cout << "\n=== Simulation Complete ===" << std::endl;
     

@@ -329,51 +329,17 @@ FLAMEGPU_AGENT_FUNCTION(mdsc_execute_move, flamegpu::MessageSpatial3D, flamegpu:
 
 // MDSC agent function: Update chemicals from PDE
 FLAMEGPU_AGENT_FUNCTION(mdsc_update_chemicals, flamegpu::MessageNone, flamegpu::MessageNone) {
-    // Get agent position
-    const int x = FLAMEGPU->getVariable<int>("x");
-    const int y = FLAMEGPU->getVariable<int>("y");
-    const int z = FLAMEGPU->getVariable<int>("z");
-    
-    // Get grid dimensions
-    const int grid_x = FLAMEGPU->environment.getProperty<int>("PARAM_GRID_SIZE_X");
-    const int grid_y = FLAMEGPU->environment.getProperty<int>("PARAM_GRID_SIZE_Y");
-    const int grid_z = FLAMEGPU->environment.getProperty<int>("PARAM_GRID_SIZE_Z");
-    
-    // Calculate flat voxel index
-    const int voxel_idx = z * (grid_x * grid_y) + y * grid_x + x;
-    
-    // ========== READ CHEMICAL CONCENTRATIONS FROM PDE ==========
-    
-    const float* d_O2 = reinterpret_cast<const float*>(
-        FLAMEGPU->environment.getProperty<unsigned long long>("pde_concentration_ptr_0"));
-    const float* d_IFN = reinterpret_cast<const float*>(
-        FLAMEGPU->environment.getProperty<unsigned long long>("pde_concentration_ptr_1"));
-    const float* d_IL2 = reinterpret_cast<const float*>(
-        FLAMEGPU->environment.getProperty<unsigned long long>("pde_concentration_ptr_2"));
-    const float* d_IL10 = reinterpret_cast<const float*>(
-        FLAMEGPU->environment.getProperty<unsigned long long>("pde_concentration_ptr_3"));
-    const float* d_TGFB = reinterpret_cast<const float*>(
-        FLAMEGPU->environment.getProperty<unsigned long long>("pde_concentration_ptr_4"));
-    const float* d_CCL2 = reinterpret_cast<const float*>(
-        FLAMEGPU->environment.getProperty<unsigned long long>("pde_concentration_ptr_5"));
-    
-    float local_O2 = d_O2[voxel_idx];
-    float local_IFNg = d_IFN[voxel_idx];
-    float local_IL2 = d_IL2[voxel_idx];
-    float local_IL10 = d_IL10[voxel_idx];
-    float local_TGFB = d_TGFB[voxel_idx];
-    float local_CCL2 = d_CCL2[voxel_idx];
-    
-    // Set local concentration variables
-    FLAMEGPU->setVariable<float>("local_O2", local_O2);
-    FLAMEGPU->setVariable<float>("local_IFNg", local_IFNg);
-    FLAMEGPU->setVariable<float>("local_IL2", local_IL2);
-    FLAMEGPU->setVariable<float>("local_IL10", local_IL10);
-    FLAMEGPU->setVariable<float>("local_TGFB", local_TGFB);
-    FLAMEGPU->setVariable<float>("local_CCL2", local_CCL2);
+    // ========== READ CHEMICAL CONCENTRATIONS FROM AGENT VARIABLES ==========
+    // These were already set by the host function update_agent_chemicals in layer 6
+    float local_O2 = FLAMEGPU->getVariable<float>("local_O2");
+    float local_IFNg = FLAMEGPU->getVariable<float>("local_IFNg");
+    float local_IL2 = FLAMEGPU->getVariable<float>("local_IL2");
+    float local_IL10 = FLAMEGPU->getVariable<float>("local_IL10");
+    float local_TGFB = FLAMEGPU->getVariable<float>("local_TGFB");
+    float local_CCL2 = FLAMEGPU->getVariable<float>("local_CCL2");
     
     // ========== COMPUTE DERIVED STATES ==========
-    
+
     // 1. Activation level (enhanced by TGF-beta)
     float activation_level = 1.0f;
     if (local_TGFB > 0.0f) {
@@ -381,43 +347,16 @@ FLAMEGPU_AGENT_FUNCTION(mdsc_update_chemicals, flamegpu::MessageNone, flamegpu::
         activation_level = 1.0f + 0.3f * hill_equation(local_TGFB, TGFB_activate_EC50, 2.0f);
     }
     FLAMEGPU->setVariable<float>("activation_level", activation_level);
-    
+
     // 2. Suppression radius
     const float base_suppression_radius = FLAMEGPU->environment.getProperty<float>("PARAM_MDSC_SUPPRESSION_RADIUS");
     float suppression_radius = base_suppression_radius * activation_level;
     FLAMEGPU->setVariable<float>("suppression_radius", suppression_radius);
-    
-    // 3. Compute CCL2 gradient for chemotaxis (simple finite difference)
-    const float dx = FLAMEGPU->environment.getProperty<float>("voxel_size") * 1.0e-4f;  // to cm
-    
-    float CCL2_gradient_x = 0.0f;
-    float CCL2_gradient_y = 0.0f;
-    float CCL2_gradient_z = 0.0f;
-    
-    // X gradient
-    if (x > 0 && x < grid_x - 1) {
-        int idx_left = voxel_idx - 1;
-        int idx_right = voxel_idx + 1;
-        CCL2_gradient_x = (d_CCL2[idx_right] - d_CCL2[idx_left]) / (2.0f * dx);
-    }
-    
-    // Y gradient
-    if (y > 0 && y < grid_y - 1) {
-        int idx_front = voxel_idx - grid_x;
-        int idx_back = voxel_idx + grid_x;
-        CCL2_gradient_y = (d_CCL2[idx_back] - d_CCL2[idx_front]) / (2.0f * dx);
-    }
-    
-    // Z gradient
-    if (z > 0 && z < grid_z - 1) {
-        int idx_bottom = voxel_idx - grid_x * grid_y;
-        int idx_top = voxel_idx + grid_x * grid_y;
-        CCL2_gradient_z = (d_CCL2[idx_top] - d_CCL2[idx_bottom]) / (2.0f * dx);
-    }
-    
-    FLAMEGPU->setVariable<float>("CCL2_gradient_x", CCL2_gradient_x);
-    FLAMEGPU->setVariable<float>("CCL2_gradient_y", CCL2_gradient_y);
-    FLAMEGPU->setVariable<float>("CCL2_gradient_z", CCL2_gradient_z);
+
+    // 3. CCL2 gradient for chemotaxis
+    // Note: Gradients are now pre-computed in update_agent_chemicals (host function)
+    // This is more efficient than calculating per-agent on the device
+    // The gradient variables are already set, so nothing to do here
     
     return flamegpu::ALIVE;
 }

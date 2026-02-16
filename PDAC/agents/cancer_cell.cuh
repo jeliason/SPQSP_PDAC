@@ -121,13 +121,17 @@ FLAMEGPU_AGENT_FUNCTION(cancer_count_neighbors, flamegpu::MessageSpatial3D, flam
             } else if (agent_type == CELL_TYPE_CANCER) {
                 cancer_count++;
                 neighbor_blocked[dir_idx] = true;
+            } else { // might check other cell types here
+                neighbor_blocked[dir_idx] = true;
             }
         }
     }
 
     // Build available_neighbors mask (voxels with no cancer, 1 or fewer tcells, no MDSCs AND in bounds)
+    // Only scan Von Neumann neighbors for availability, can just skip other directions
+    // Counts for interactions already calculated
     unsigned int available_neighbors = 0;
-    for (int i = 0; i < 26; i++) {
+    for (int i = 0; i < 6; i++) {
         int dx, dy, dz;
         get_moore_direction(i, dx, dy, dz);
         int nx = my_x + dx;
@@ -841,48 +845,15 @@ FLAMEGPU_AGENT_FUNCTION(cancer_execute_divide, flamegpu::MessageSpatial3D, flame
 // Cancer Cell agent function: Update chemicals from PDE
 // Reads local concentrations and computes molecular responses
 FLAMEGPU_AGENT_FUNCTION(cancer_update_chemicals, flamegpu::MessageNone, flamegpu::MessageNone) {
-    // Get agent position
-    const int x = FLAMEGPU->getVariable<int>("x");
-    const int y = FLAMEGPU->getVariable<int>("y");
-    const int z = FLAMEGPU->getVariable<int>("z");
-    
-    // Get grid dimensions
-    const int grid_x = FLAMEGPU->environment.getProperty<int>("grid_size_x");
-    const int grid_y = FLAMEGPU->environment.getProperty<int>("grid_size_y");
-    const int grid_z = FLAMEGPU->environment.getProperty<int>("grid_size_z");
-    
-    // Calculate flat voxel index
-    const int voxel_idx = z * (grid_x * grid_y) + y * grid_x + x;
-    
-    // ========== READ CHEMICAL CONCENTRATIONS FROM PDE ==========
-    
-    // Get device pointers from environment
-    const float* d_O2 = reinterpret_cast<const float*>(
-        FLAMEGPU->environment.getProperty<unsigned long long>("pde_concentration_ptr_0"));  // CHEM_O2
-    const float* d_IFNg = reinterpret_cast<const float*>(
-        FLAMEGPU->environment.getProperty<unsigned long long>("pde_concentration_ptr_1"));  // CHEM_IFNg
-    const float* d_TGFB = reinterpret_cast<const float*>(
-        FLAMEGPU->environment.getProperty<unsigned long long>("pde_concentration_ptr_4"));  // CHEM_TGFB
-    const float* d_ArgI = reinterpret_cast<const float*>(
-        FLAMEGPU->environment.getProperty<unsigned long long>("pde_concentration_ptr_6"));  // CHEM_ArgI
-    const float* d_NO = reinterpret_cast<const float*>(
-        FLAMEGPU->environment.getProperty<unsigned long long>("pde_concentration_ptr_7"));  // CHEM_NO
+    // ========== READ CHEMICAL CONCENTRATIONS FROM AGENT VARIABLES ==========
+    // These were already set by the host function update_agent_chemicals in layer 6
+    // No need to access PDE memory directly!
 
-
-    // Read concentrations at this voxel
-    float local_O2 = d_O2[voxel_idx];
-    float local_IFNg = d_IFNg[voxel_idx];
-    float local_TGFB = d_TGFB[voxel_idx];
-    float local_ArgI = d_ArgI[voxel_idx];
-    float local_NO = d_NO[voxel_idx];
-    // Note: NIVO and CABO are managed by QSP model on CPU, not in PDE
-
-    // Set local concentration variables
-    FLAMEGPU->setVariable<float>("local_O2", local_O2);
-    FLAMEGPU->setVariable<float>("local_IFNg", local_IFNg);
-    FLAMEGPU->setVariable<float>("local_TGFB", local_TGFB);
-    FLAMEGPU->setVariable<float>("local_ArgI", local_ArgI);
-    FLAMEGPU->setVariable<float>("local_NO", local_NO);
+    float local_O2 = FLAMEGPU->getVariable<float>("local_O2");
+    float local_IFNg = FLAMEGPU->getVariable<float>("local_IFNg");
+    float local_TGFB = FLAMEGPU->getVariable<float>("local_TGFB");
+    float local_ArgI = FLAMEGPU->getVariable<float>("local_ArgI");
+    float local_NO = FLAMEGPU->getVariable<float>("local_NO");
     
     // ========== COMPUTE DERIVED MOLECULAR STATES ==========
     

@@ -32,6 +32,12 @@ enum TCellState : int {
     T_CELL_SUPP = 2
 };
 
+// T reg state enumeration
+enum TCD4State : int {
+    TCD4_TREG = 0,
+    TCD4_TH = 1,
+};
+
 // Message names
 constexpr const char* MSG_CELL_LOCATION = "cell_location";
 constexpr const char* MSG_INTENT = "intent_message";

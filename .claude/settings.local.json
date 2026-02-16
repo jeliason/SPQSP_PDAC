@@ -8,7 +8,9 @@
       "Bash(g++:*)",
       "Bash(ls:*)",
       "Bash(./build/bin/pdac:*)",
-      "Bash(nsys stats:*)"
+      "Bash(nsys stats:*)",
+      "Bash(python3:*)",
+      "Bash(grep:*)"
     ]
   }
 }
