@@ -324,7 +324,7 @@ QSPState LymphCentralWrapper::get_state_for_abm() const {
 
         state.tum_vol = _compute_tumor_volume(ode_sys);
 
-        std::cout << "Nivo dose going into ABM: " << state.nivo_tumor << std::endl;
+        // std::cout << "Nivo dose going into ABM: " << state.nivo_tumor << std::endl;
 
         return state;
 
@@ -412,35 +412,45 @@ void LymphCentralWrapper::_apply_drug_doses(double t, double dt) {
 
     const double treat_t = t - _treatment_start_time;  // elapsed treatment time
 
-    // --- Nivolumab (aPD1) ---
-    if (_nivo_on && _nivo_interval_s > 0.0 && _nivo_dose > 0.0) {
-        while (treat_t >= _nivo_next_dose_t) {
-            double cur = ode->getSpeciesVar(SP_V_C_aPD1);
-            ode->setSpeciesVar(SP_V_C_aPD1, cur + _nivo_dose);
-            _nivo_doses_given++;
-            std::cout << "  [Dosing] Nivolumab dose #" << _nivo_doses_given
-                      << " at treat_day=" << (_nivo_next_dose_t / 86400.0)
-                      << " (t=" << (t / 86400.0) << " d)"
-                      << " central=" << std::scientific << ode->getSpeciesVar(SP_V_C_aPD1)
-                      << " mol" << std::endl;
-            _nivo_next_dose_t += _nivo_interval_s;
-        }
-    }
+    const double SEC_PER_DAY = 86400.0;
+    double final_dose_week = 8;
+    double day_per_week = 7;
 
-    // --- Cabozantinib (oral, two-site absorption) ---
-    if (_cabo_on && _cabo_interval_s > 0.0 && _cabo_dose > 0.0) {
-        while (treat_t >= _cabo_next_dose_t) {
-            // Split dose between absorption sites (ODE uses two-lag model)
-            double half_dose = _cabo_dose * 0.5;
-            double s1 = ode->getSpeciesVar(SP_V_C_A_site1);
-            double s2 = ode->getSpeciesVar(SP_V_C_A_site2);
-            ode->setSpeciesVar(SP_V_C_A_site1, s1 + half_dose);
-            ode->setSpeciesVar(SP_V_C_A_site2, s2 + half_dose);
-            _cabo_doses_given++;
-            std::cout << "  [Dosing] Cabozantinib dose #" << _cabo_doses_given
-                      << " at treat_day=" << (_cabo_next_dose_t / 86400.0)
-                      << " (t=" << (t / 86400.0) << " d)" << std::endl;
-            _cabo_next_dose_t += _cabo_interval_s;
+    if (treat_t / (SEC_PER_DAY * day_per_week) < final_dose_week){
+        // --- Nivolumab (aPD1) ---
+        if (_nivo_on && _nivo_interval_s > 0.0 && _nivo_dose > 0.0) {
+            while (treat_t >= _nivo_next_dose_t) {
+                double cur = ode->getSpeciesVar(SP_V_C_aPD1, false);
+                ode->setSpeciesVar(SP_V_C_aPD1, cur + _nivo_dose, false);
+                _nivo_doses_given++;
+                // std::cout << "  [Dosing] Nivolumab dose #" << _nivo_doses_given
+                //           << " at treat_day=" << (_nivo_next_dose_t / 86400.0)
+                //           << " (t=" << (t / 86400.0) << " d)"
+                //           << " central=" << std::scientific << ode->getSpeciesVar(SP_V_C_aPD1)
+                //           << " mol" << std::endl;
+                _nivo_next_dose_t += _nivo_interval_s;
+            }
+        }
+
+        // --- Cabozantinib (oral, two-site absorption) ---
+        if (_cabo_on && _cabo_interval_s > 0.0 && _cabo_dose > 0.0) {
+            while (treat_t >= _cabo_next_dose_t) {
+                // Split dose between absorption sites (ODE uses two-lag model)
+                double s1 = ode->getSpeciesVar(SP_V_C_A_site1, false);
+                double s2 = ode->getSpeciesVar(SP_V_C_A_site2, false);
+
+                double f1 = 0.675;
+                double s1_dose = f1*_cabo_dose / QP(P_V_C);
+                double s2_dose = (1-f1)*_cabo_dose / QP(P_V_C);
+
+                ode->setSpeciesVar(SP_V_C_A_site1, s1 + s1_dose, false);
+                ode->setSpeciesVar(SP_V_C_A_site2, s2 + s2_dose, false);
+                _cabo_doses_given++;
+                // std::cout << "  [Dosing] Cabozantinib dose #" << _cabo_doses_given
+                //           << " at treat_day=" << (_cabo_next_dose_t / 86400.0)
+                //           << " (t=" << (t / 86400.0) << " d)" << std::endl;
+                _cabo_next_dose_t += _cabo_interval_s;
+            }
         }
     }
 }

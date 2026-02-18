@@ -74,7 +74,7 @@ FLAMEGPU_AGENT_FUNCTION(treg_scan_neighbors, flamegpu::MessageSpatial3D, flamegp
     int found_progenitor = 0;
 
     // Per-neighbor counts: [direction][0=cancer, 1=tcell, 2=treg]
-    int neighbor_counts[26][4] = {{0}};
+    int neighbor_counts[26][3] = {{0}};
 
     for (const auto& msg : FLAMEGPU->message_in(my_pos_x, my_pos_y, my_pos_z)) {
         const int msg_x = msg.getVariable<int>("voxel_x");
@@ -115,8 +115,6 @@ FLAMEGPU_AGENT_FUNCTION(treg_scan_neighbors, flamegpu::MessageSpatial3D, flamegp
                     if (agent_state == CANCER_PROGENITOR) {
                         found_progenitor = 1;
                     }
-                } else {
-                    neighbor_counts[dir_idx][3] = 1;
                 }
             }
         }
@@ -138,7 +136,7 @@ FLAMEGPU_AGENT_FUNCTION(treg_scan_neighbors, flamegpu::MessageSpatial3D, flamegp
             int t_count = neighbor_counts[i][1] + neighbor_counts[i][2];
             int max_cap = has_cancer ? MAX_T_PER_VOXEL_WITH_CANCER : MAX_T_PER_VOXEL;
 
-            if ((t_count < max_cap) && (neighbor_counts[i][3] == 0)) {
+            if ((t_count < max_cap)) {
                 available_neighbors |= (1u << i);
             }
         }

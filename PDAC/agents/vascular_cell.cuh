@@ -354,14 +354,17 @@ FLAMEGPU_AGENT_FUNCTION(vascular_mark_t_sources, flamegpu::MessageNone, flamegpu
     const int grid_z = FLAMEGPU->environment.getProperty<int>("grid_size_z");
 
     // Get IFN-γ concentration at this voxel
-    const float local_IFNg = FLAMEGPU->getVariable<float>("local_VEGFA");  // Will be set correctly when we add IFN read
+    const float local_IFNg = FLAMEGPU->getVariable<float>("local_IFNg");  // Will be set correctly when we add IFN read
 
     // Calculate Hill function (simplified from HCC - no tumor scaling for now)
     const float ec50_ifng = FLAMEGPU->environment.getProperty<int>("PARAM_TEFF_IFN_EC50");
     const float H_IFNg = local_IFNg / (local_IFNg + ec50_ifng);
 
-    // Simple probability check
-    const float p_entry = H_IFNg * 0.1f;  // Simplified (HCC uses tumor_scaler * vas_scaler)
+    // Probability check
+    double max_cancer = grid_x * grid_y * grid_z;
+	double tumor_scaler = std::sqrt(1e5 * max_cancer / (FLAMEGPU->environment.getProperty<float>("qsp_cc_tumor") * FLAMEGPU->environment.getProperty<float>("AVOGADROS")));
+    double vas_scaler = 100 / 200; // Should get the current total of vasculature cells, need a property to set this
+    const float p_entry = H_IFNg * tumor_scaler * vas_scaler;
 
     if (FLAMEGPU->random.uniform<float>() < p_entry) {
         // Get recruitment sources array pointer from environment

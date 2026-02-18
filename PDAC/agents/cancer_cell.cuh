@@ -117,11 +117,8 @@ FLAMEGPU_AGENT_FUNCTION(cancer_count_neighbors, flamegpu::MessageSpatial3D, flam
                 neighbor_tcells[dir_idx]++;
             } else if (agent_type == CELL_TYPE_MDSC) {
                 mdsc_count++;
-                neighbor_blocked[dir_idx] = true;
             } else if (agent_type == CELL_TYPE_CANCER) {
                 cancer_count++;
-                neighbor_blocked[dir_idx] = true;
-            } else { // might check other cell types here
                 neighbor_blocked[dir_idx] = true;
             }
         }
@@ -324,7 +321,7 @@ FLAMEGPU_AGENT_FUNCTION(cancer_execute_move, flamegpu::MessageSpatial3D, flamegp
             }
 
             // Skip if not a competing agent type
-            if (!(msg_agent_type == CELL_TYPE_CANCER || msg_agent_type == CELL_TYPE_MDSC)) {
+            if (!(msg_agent_type == CELL_TYPE_CANCER)) {
                 continue;
             }
 
@@ -480,7 +477,7 @@ FLAMEGPU_AGENT_FUNCTION(cancer_cell_state_step, flamegpu::MessageNone, flamegpu:
     }
 
     // Hypoxia check
-    if (cell_state == CANCER_SENESCENT) {
+    if (cell_state == CANCER_PROGENITOR) {
         int hypoxic = FLAMEGPU->getVariable<int>("hypoxic");
         if (hypoxic == 1) {
             FLAMEGPU->setVariable("divideFlag",0);
@@ -724,7 +721,7 @@ FLAMEGPU_AGENT_FUNCTION(cancer_execute_divide, flamegpu::MessageSpatial3D, flame
             }
 
             // Skip if not a competing agent type or not dividing
-            if (!(msg_agent_type == CELL_TYPE_CANCER || msg_agent_type == CELL_TYPE_MDSC)) {
+            if (!(msg_agent_type == CELL_TYPE_CANCER)) {
                 continue;
             }
 
@@ -790,7 +787,7 @@ FLAMEGPU_AGENT_FUNCTION(cancer_execute_divide, flamegpu::MessageSpatial3D, flame
     } else if (cell_state == CANCER_PROGENITOR) {
         int divideCountRemaining = FLAMEGPU->getVariable<int>("divideCountRemaining");
         divideCountRemaining--;
-
+        FLAMEGPU->setVariable<int>("divideCountRemaining",divideCountRemaining);
         float div_int = FLAMEGPU->environment.getProperty<float>(
                                 "PARAM_FLOAT_CANCER_CELL_PROGENITOR_DIV_INTERVAL_SLICE");
         const float progenitor_div_interval = static_cast<int>(div_int + 0.5f);

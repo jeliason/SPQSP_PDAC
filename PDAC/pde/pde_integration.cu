@@ -282,11 +282,13 @@ FLAMEGPU_HOST_FUNCTION(update_agent_chemicals) {
 
     // Read O2
     read_chemical_to_agents(*FLAMEGPU, AGENT_CANCER_CELL, CHEM_O2, "local_O2");
+    read_chemical_to_agents(*FLAMEGPU, AGENT_VASCULAR, CHEM_O2, "local_O2");
     
     // Read IFN-gamma
     read_chemical_to_agents(*FLAMEGPU, AGENT_CANCER_CELL, CHEM_IFN, "local_IFNg");
     read_chemical_to_agents(*FLAMEGPU, AGENT_TREG, CHEM_IFN, "local_IFNg");
     read_chemical_to_agents(*FLAMEGPU, AGENT_MDSC, CHEM_IFN, "local_IFNg");
+    read_chemical_to_agents(*FLAMEGPU, AGENT_VASCULAR, CHEM_IFN, "local_IFNg");
 
     // Read IL-2
     read_chemical_to_agents(*FLAMEGPU, AGENT_TCELL, CHEM_IL2, "local_IL2");
@@ -553,8 +555,8 @@ FLAMEGPU_HOST_FUNCTION(mark_mdsc_sources) {
     int* d_recruitment_sources = g_pde_solver->get_device_recruitment_sources_ptr();
     const float* d_ccl2 = g_pde_solver->get_device_concentration_ptr(CHEM_CCL2);
 
-    // Get parameter (simplified - using fixed value for now, can read from environment later)
-    float ec50_ccl2 = 1e-10f;  // PARAM_MDSC_EC50_CCL2_REC from HCC
+    // Get parameter
+    float ec50_ccl2 = FLAMEGPU->environment.getProperty<float>("PARAM_MDSC_EC50_CCL2_REC");
 
     // Generate random seed from step number
     unsigned int seed = static_cast<unsigned int>(FLAMEGPU->getStepCounter()) * 12345u;

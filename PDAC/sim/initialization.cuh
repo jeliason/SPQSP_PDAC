@@ -101,19 +101,19 @@ void initializeMDSCs(
 void initializeTHCellsFromQSP(
     flamegpu::AgentVector& treg_agents,
     int grid_x, int grid_y, int grid_z,
-    double p_th, std::vector<bool>& occupied,
+    double p_th, std::vector<std::vector<int>>& occupied,
     float life_mean, int div_limit, int div_interval);
 
 void initializeTRegCellsFromQSP(
     flamegpu::AgentVector& treg_agents,
     int grid_x, int grid_y, int grid_z,
-    double p_treg, std::vector<bool>& occupied,
+    double p_treg, std::vector<std::vector<int>>& occupied,
     float life_mean, int div_limit, int div_interval);
 
 void initializeMDSCsFromQSP(
     flamegpu::AgentVector& mdsc_agents,
     int grid_x, int grid_y, int grid_z,
-    double p_mdsc, std::vector<bool>& occupied,
+    double p_mdsc, std::vector<std::vector<int>>& occupied,
     float life_mean);
 
 // Initialize Vascular Cells with random walk (HCC-style)

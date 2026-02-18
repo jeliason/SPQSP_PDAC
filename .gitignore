@@ -2,4 +2,5 @@
 /python/venv/
 /PDAC/sim/outputs/
 /PDAC/sim/profiling/
-
+/PDAC/sim/HCC_outputs/
+/PDAC/sim/TNBC_outputs/

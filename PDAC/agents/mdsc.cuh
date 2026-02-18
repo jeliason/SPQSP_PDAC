@@ -108,13 +108,11 @@ FLAMEGPU_AGENT_FUNCTION(mdsc_scan_neighbors, flamegpu::MessageSpatial3D, flamegp
             if (dir_idx >= 0) {
                 if (agent_type == CELL_TYPE_CANCER) {
                     cancer_count++;
-                    neighbor_blocked[dir_idx] = true;
                 } else if (agent_type == CELL_TYPE_T) {
                     tcell_count++;
                     neighbor_tcells[dir_idx]++;
                 } else if (agent_type == CELL_TYPE_TREG) {
                     treg_count++;
-                    neighbor_tcells[dir_idx]++;
                 } else if (agent_type == CELL_TYPE_MDSC) {
                     mdsc_count++;
                     neighbor_blocked[dir_idx] = true;
@@ -134,7 +132,7 @@ FLAMEGPU_AGENT_FUNCTION(mdsc_scan_neighbors, flamegpu::MessageSpatial3D, flamegp
 
         if (is_in_bounds(nx, ny, nz, size_x, size_y, size_z)) {
             // MDSC can move to voxel only if no other MDSC is there
-            if (!neighbor_blocked[i] && neighbor_tcells[i] == 0) {
+            if (!neighbor_blocked[i]) {
                 available_neighbors |= (1u << i);
             }
         }
@@ -306,7 +304,7 @@ FLAMEGPU_AGENT_FUNCTION(mdsc_execute_move, flamegpu::MessageSpatial3D, flamegpu:
             const int msg_src_z = msg.getVariable<int>("source_z");
 
             // Only 1 MDSC per voxel - higher priority wins
-            if ((msg_agent_type == CELL_TYPE_MDSC || msg_agent_type == CELL_TYPE_CANCER) && msg_intent == INTENT_MOVE) {
+            if ((msg_agent_type == CELL_TYPE_MDSC) && msg_intent == INTENT_MOVE) {
                 // Skip self
                 if (msg_id == my_id) {
                     continue;

@@ -163,66 +163,6 @@ void initializeCancerCellCluster(
             }
         }
     }
-
-    // // TEMP: Initialize 7 cells in the grid center
-    // std::vector<std::vector<int>> points = {{25,25,25},{25,25,26},{25,25,24},{25,26,25},{25,24,25},{26,25,25},{24,25,25}};
-    // std::vector<int> ids = {1,2,3,4,5,6,7};
-    // for (int i=0; i < 7; i++){
-    //     cancer_agents.push_back();
-    //     flamegpu::AgentVector::Agent agent = cancer_agents.back();
-
-    //     // Stem cells at center, progenitors at periphery
-    //     bool is_stem = false;
-    //     int cell_state = is_stem ? CANCER_STEM : CANCER_PROGENITOR;
-    //     int div_cd = is_stem ? 
-    //         static_cast<int>(stem_div_interval) : 
-    //         static_cast<int>(progenitor_div_interval);
-
-    //     // Basic identity and state
-    //     const int id = agent.getID();
-    //     agent.setVariable<int>("x", points[i][0]);
-    //     agent.setVariable<int>("y", points[i][1]);
-    //     agent.setVariable<int>("z", points[i][2]);
-    //     agent.setVariable<int>("cell_state", cell_state);
-    //     agent.setVariable<int>("divideCD", div_cd);
-    //     agent.setVariable<int>("divideFlag", 1);
-    //     agent.setVariable<int>("divideCountRemaining", progenitor_div_max);
-    //     agent.setVariable<unsigned int>("stemID", is_stem ? id : 0);
-        
-    //     // Chemical state variables (from PDE coupling)
-    //     agent.setVariable<float>("local_NO", 0.001f);
-    //     agent.setVariable<float>("local_ArgI", 0.0f);
-    //     agent.setVariable<float>("local_TGFB", 0.0f);
-    //     agent.setVariable<float>("local_O2", 0.0f);
-    //     agent.setVariable<float>("local_IFNg", 0.0f);
-
-    //     agent.setVariable<float>("PDL1_surface", 0.1f);
-    //     agent.setVariable<float>("PDL1_syn_rate", 0.0f);
-    //     agent.setVariable<float>("PDL1_syn", 0.1f);
-    //     agent.setVariable<float>("O2_uptake_rate", 0.0f);
-    //     agent.setVariable<int>("hypoxic", 0);
-    //     agent.setVariable<float>("cabo_effect", 0.0f);
-        
-    //     // Neighbor counts
-    //     agent.setVariable<int>("neighbor_Teff_count", 0);
-    //     agent.setVariable<int>("neighbor_Treg_count", 0);
-    //     agent.setVariable<int>("neighbor_cancer_count", 0);
-    //     agent.setVariable<int>("neighbor_MDSC_count", 0);
-    //     agent.setVariable<unsigned int>("available_neighbors", 0u);
-        
-    //     // Lifecycle
-    //     agent.setVariable<int>("life", 0);
-    //     agent.setVariable<int>("dead", 0);
-        
-    //     // Intent
-    //     agent.setVariable<int>("intent_action", INTENT_NONE);
-    //     agent.setVariable<int>("target_x", -1);
-    //     agent.setVariable<int>("target_y", -1);
-    //     agent.setVariable<int>("target_z", -1);
-
-    //     count++;
-    // }
-
     std::cout << "Initialized " << (count - 1) << " cancer cells in cluster" << std::endl;
 }
 
@@ -698,15 +638,93 @@ void initializeVascularCellsTest(
 // existing AgentVector.  Agents at (x,y,z) mark index z*gx*gy + y*gx + x.
 static void buildOccupancyGrid(
     const flamegpu::AgentVector& agents,
-    std::vector<bool>& occupied,
+    std::vector<std::vector<int>>& occupied,
     int grid_x, int grid_y)
 {
     for (unsigned int i = 0; i < agents.size(); i++) {
         int x = agents[i].getVariable<int>("x");
         int y = agents[i].getVariable<int>("y");
         int z = agents[i].getVariable<int>("z");
-        occupied[z * grid_x * grid_y + y * grid_x + x] = true;
+        occupied[z * grid_x * grid_y + y * grid_x + x][0] = 1;
     }
+}
+
+void initializeCancerCellsRandom(
+    flamegpu::AgentVector& cancer_agents,
+    int grid_x, int grid_y, int grid_z,
+    int cluster_radius,
+    float stem_div_interval,
+    float progenitor_div_interval,
+    int progenitor_div_max,
+    std::vector<double> celltype_cdf)
+{
+    unsigned int count = 1;
+    const int cx = grid_x / 2;
+    const int cy = grid_y / 2;
+    const int cz = grid_z / 2;
+
+    for (int x = cx - cluster_radius; x <= cx + cluster_radius; x++) {
+        for (int y = cy - cluster_radius; y <= cy + cluster_radius; y++) {
+            for (int z = cz - cluster_radius; z <= cz + cluster_radius; z++) {
+                const float dist = std::sqrt(
+                    static_cast<float>((x - cx) * (x - cx) +
+                    (y - cy) * (y - cy) +
+                    (z - cz) * (z - cz))
+                );
+
+                if (dist > cluster_radius) continue;
+
+                // Sample from CDF to determine Stem, Prog, or Sen
+                double p = static_cast<float>(rand()) / RAND_MAX;
+                int i = std::lower_bound(celltype_cdf.begin(), celltype_cdf.begin(), p) - celltype_cdf.begin();
+                int cell_state;
+                int div_cd = 0;
+                int div = 0;
+                int divide_flag = 0;
+                int is_stem = 0;
+                if (i < progenitor_div_max + 1){
+                    cancer_agents.push_back();
+                    flamegpu::AgentVector::Agent agent = cancer_agents.back();
+                    if (i==0) {
+                        cell_state = CANCER_STEM;
+
+                        float random_factor = (static_cast<float>(rand()) / RAND_MAX);
+                        div_cd = static_cast<int>((stem_div_interval * random_factor) + 0.5);
+
+                        divide_flag = 1;
+
+                        is_stem = 1;
+
+                    } else if (i == progenitor_div_max + 1){
+                        cell_state = CANCER_SENESCENT;
+
+                    } else {
+                        cell_state = CANCER_PROGENITOR;
+                        div = progenitor_div_max + 1 - i;
+
+                        float random_factor = (static_cast<float>(rand()) / RAND_MAX);
+                        div_cd = static_cast<int>((progenitor_div_interval * random_factor) + 0.5);
+
+                        divide_flag = 1;
+                    }
+
+                    // Basic identity and state
+                    const int id = agent.getID();
+                    agent.setVariable<int>("x", x);
+                    agent.setVariable<int>("y", y);
+                    agent.setVariable<int>("z", z);
+                    agent.setVariable<int>("cell_state", cell_state);
+                    agent.setVariable<int>("divideCD", div_cd);
+                    agent.setVariable<int>("divideFlag", divide_flag);
+                    agent.setVariable<int>("divideCountRemaining", div);
+                    agent.setVariable<unsigned int>("stemID", is_stem ? id : 0);
+
+                    count++;
+                }
+            }
+        }
+    }
+    std::cout << "Initialized " << (count - 1) << " cancer cells in cluster" << std::endl;
 }
 
 // Place T-helper cells (TCD4_TH) into the AGENT_TREG vector, testing
@@ -715,15 +733,14 @@ void initializeTHCellsFromQSP(
     flamegpu::AgentVector& treg_agents,
     int grid_x, int grid_y, int grid_z,
     double p_th,
-    std::vector<bool>& occupied,
+    std::vector<std::vector<int>>& occupied,
     float life_mean, int div_limit, int div_interval)
 {
     int placed = 0;
     for (int z = 0; z < grid_z; z++) {
         for (int y = 0; y < grid_y; y++) {
             for (int x = 0; x < grid_x; x++) {
-                const int idx = z * grid_x * grid_y + y * grid_x + x;
-                if (occupied[idx]) continue;
+                // const int idx = z * grid_x * grid_y + y * grid_x + x;
 
                 const float rnd = static_cast<float>(rand()) / RAND_MAX;
                 if (rnd >= static_cast<float>(p_th)) continue;
@@ -746,7 +763,6 @@ void initializeTHCellsFromQSP(
                 agent.setVariable<int>("divide_limit", div_limit);
                 agent.setVariable<int>("life", life);
 
-                occupied[idx] = true;
                 placed++;
             }
         }
@@ -760,15 +776,14 @@ void initializeTRegCellsFromQSP(
     flamegpu::AgentVector& treg_agents,
     int grid_x, int grid_y, int grid_z,
     double p_treg,
-    std::vector<bool>& occupied,
+    std::vector<std::vector<int>>& occupied,
     float life_mean, int div_limit, int div_interval)
 {
     int placed = 0;
     for (int z = 0; z < grid_z; z++) {
         for (int y = 0; y < grid_y; y++) {
             for (int x = 0; x < grid_x; x++) {
-                const int idx = z * grid_x * grid_y + y * grid_x + x;
-                if (occupied[idx]) continue;
+                // const int idx = z * grid_x * grid_y + y * grid_x + x;
 
                 const float rnd = static_cast<float>(rand()) / RAND_MAX;
                 if (rnd >= static_cast<float>(p_treg)) continue;
@@ -791,7 +806,6 @@ void initializeTRegCellsFromQSP(
                 agent.setVariable<int>("divide_limit", div_limit);
                 agent.setVariable<int>("life", life);
 
-                occupied[idx] = true;
                 placed++;
             }
         }
@@ -805,15 +819,14 @@ void initializeMDSCsFromQSP(
     flamegpu::AgentVector& mdsc_agents,
     int grid_x, int grid_y, int grid_z,
     double p_mdsc,
-    std::vector<bool>& occupied,
+    std::vector<std::vector<int>>& occupied,
     float life_mean)
 {
     int placed = 0;
     for (int z = 0; z < grid_z; z++) {
         for (int y = 0; y < grid_y; y++) {
             for (int x = 0; x < grid_x; x++) {
-                const int idx = z * grid_x * grid_y + y * grid_x + x;
-                if (occupied[idx]) continue;
+                // const int idx = z * grid_x * grid_y + y * grid_x + x;
 
                 const float rnd = static_cast<float>(rand()) / RAND_MAX;
                 if (rnd >= static_cast<float>(p_mdsc)) continue;
@@ -833,7 +846,6 @@ void initializeMDSCsFromQSP(
                 agent.setVariable<int>("target_y", -1);
                 agent.setVariable<int>("target_z", -1);
 
-                occupied[idx] = true;
                 placed++;
             }
         }
@@ -944,6 +956,44 @@ void initializeAllAgents(
 
     std::cout << "Agent initialization complete\n" << std::endl;
 }
+// ============================================================================
+// Get cell type CDF
+// ============================================================================
+std::vector<double> get_celltype_cdf(flamegpu::ModelDescription& model){
+    int dmax = model.Environment().getProperty<int>("PARAM_PROG_DIV_MAX");
+    std::vector<double> celltype_cdf = std::vector<double>(dmax+3,0.0);
+
+    double k, r, rs, rp, mu, l0, l1, l2;
+    k = model.Environment().getProperty<float>("PARAM_ASYM_DIV_PROB");
+    rs = model.Environment().getProperty<float>("PARAM_CSC_GROWTH_RATE");
+    rp = model.Environment().getProperty<float>("PARAM_PROG_GROWTH_RATE");
+    mu = model.Environment().getProperty<float>("PARAM_SEN_DEATH_RATE");
+    r = rs * (1 - k);
+	l0 = k*rs / (r + rp);
+	l1 = 2 * rp / (r + rp);
+	l2 = 2 * rp / (r + mu);
+    double C;
+    if (l1 == 1) {
+        C = 1 + l0 + l0 * l2 * std::pow(l1, (dmax - 1));
+    }
+    else {
+        C = 1 + l0 * (std::pow(l1, dmax) - 1) / (l1 - 1) + l0 * l2 * std::pow(l1, (dmax - 1));
+    }
+    double p;
+    celltype_cdf[0] = p = 1 / C; // joint P
+    p *= l0;
+    celltype_cdf[1] = celltype_cdf[0] + p;
+    for (size_t i = 2; i <= dmax; i++)
+    {
+        p *= l1;
+        celltype_cdf[i] = celltype_cdf[i - 1] + p;
+    }
+    p *= l2;
+    celltype_cdf[dmax + 1] = celltype_cdf[dmax] + p;
+    celltype_cdf[dmax + 2] = 1.0;
+
+    return celltype_cdf;
+}
 
 // ============================================================================
 // QSP-Seeded Initialization
@@ -965,20 +1015,21 @@ void initializeToQSP(
     std::cout << "  QSP Treg (SI)     : " << qsp.treg_tumor << std::endl;
     std::cout << "  QSP MDSC (SI)     : " << qsp.mdsc_tumor << std::endl;
 
-    // -----------------------------------------------------------------------
-    // Compute cluster_radius in voxels from QSP tumor volume
-    //   Sphere volume: V = (4/3)π r³  →  r = cbrt(3V / 4π)
-    // -----------------------------------------------------------------------
-    const double voxel_size_cm = config.voxel_size * 1e-4;  // µm → cm
-    const double tum_radius_cm = std::cbrt(3.0 * qsp.tum_vol / (4.0 * M_PI));
-    int cluster_radius = static_cast<int>(std::round(tum_radius_cm / voxel_size_cm));
+    // // -----------------------------------------------------------------------
+    // // Compute cluster_radius in voxels from QSP tumor volume
+    // //   Sphere volume: V = (4/3)π r³  →  r = cbrt(3V / 4π)
+    // // -----------------------------------------------------------------------
+    // const double voxel_size_cm = config.voxel_size * 1e-4;  // µm → cm
+    // const double tum_radius_cm = std::cbrt(3.0 * qsp.tum_vol / (4.0 * M_PI));
+    // int cluster_radius = static_cast<int>(std::round(tum_radius_cm / voxel_size_cm));
 
-    // Clamp to fit within grid (at least 1 voxel, at most grid_half - 2)
-    const int max_radius = std::min({config.grid_x, config.grid_y, config.grid_z}) / 2 - 2;
-    if (cluster_radius < 1) cluster_radius = 1;
-    if (cluster_radius > max_radius) cluster_radius = max_radius;
+    // // Clamp to fit within grid (at least 1 voxel, at most grid_half - 2)
+    // const int max_radius = std::min({config.grid_x, config.grid_y, config.grid_z}) / 2 - 2;
+    // if (cluster_radius < 1) cluster_radius = 1;
+    // if (cluster_radius > max_radius) cluster_radius = max_radius;
 
-    std::cout << "  tum_radius_cm   = " << tum_radius_cm  << " cm" << std::endl;
+    // Use arbitrary scalar to initialize tumor radius
+    int cluster_radius = static_cast<int>(0.44 * config.grid_x); 
     std::cout << "  cluster_radius  = " << cluster_radius << " voxels" << std::endl;
 
     // -----------------------------------------------------------------------
@@ -1021,18 +1072,23 @@ void initializeToQSP(
     const float mdsc_life        = model.Environment().getProperty<float>("PARAM_MDSC_LIFE_MEAN_SLICE");
 
     // -----------------------------------------------------------------------
+    // Get CDF for cancer cell population
+    // -----------------------------------------------------------------------
+    std::vector<double> celltype_cdf = get_celltype_cdf(model);
+    // -----------------------------------------------------------------------
     // Initialize cancer cells (fills sphere of cluster_radius) and build
     // occupancy grid so immune cells don't overlap cancer cell positions.
     // -----------------------------------------------------------------------
     const int total_voxels = config.grid_x * config.grid_y * config.grid_z;
-    std::vector<bool> occupied(total_voxels, false);
+    // std::vector<std::vector<int>> occupied = std::vector<int>(total_voxels, std::vector<int>(3, 0));
 
+    std::vector<std::vector<int>> occupied(total_voxels, std::vector<int>(3, 0));
     {
         flamegpu::AgentVector cancer_pop(model.Agent(AGENT_CANCER_CELL));
-        initializeCancerCellCluster(
+        initializeCancerCellsRandom(
             cancer_pop,
             config.grid_x, config.grid_y, config.grid_z,
-            cluster_radius, stem_div, prog_div, prog_max);
+            cluster_radius, stem_div, prog_div, prog_max, celltype_cdf);
         buildOccupancyGrid(cancer_pop, occupied, config.grid_x, config.grid_y);
         simulation.setPopulationData(cancer_pop);
     }
