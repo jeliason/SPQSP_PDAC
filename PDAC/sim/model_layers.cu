@@ -13,7 +13,19 @@ extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER solve_pde_step;
 extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER update_agent_counts;
 extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER solve_qsp_step;
 extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER zero_occupancy_grid;
-
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER chk_after_zero_occ;
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER chk_after_write_occ;
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER chk_after_move_cancer;
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER chk_after_move_tcell;
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER chk_after_move_treg;
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER chk_after_move_mdsc;
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER chk_after_move_vas;
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER chk_after_div_cancer;
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER chk_after_div_tcell;
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER chk_after_div_treg;
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER chk_after_div_vas;
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER chk_start_step;
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER chk_break;
 // Define main model execution layers (state transitions and division)
 void defineMainModelLayers(flamegpu::ModelDescription& model) {
     // Movement submodels loaded in first
@@ -21,6 +33,8 @@ void defineMainModelLayers(flamegpu::ModelDescription& model) {
     // 1. Final broadcast and scan to get fresh neighbor data
     // 2. State transitions
     // 3. Division
+
+    { flamegpu::LayerDescription l = model.newLayer("chk_start_step"); l.addHostFunction(chk_start_step); }
 
     // 0. update agent counts
     {
@@ -40,6 +54,8 @@ void defineMainModelLayers(flamegpu::ModelDescription& model) {
         flamegpu::LayerDescription layer = model.newLayer("mark_vascular_t_sources");
         layer.addAgentFunction(AGENT_VASCULAR, "mark_t_sources");
     }
+
+    
 
     // Mark MDSC sources (all voxels based on CCL2)
     {
@@ -106,7 +122,7 @@ void defineMainModelLayers(flamegpu::ModelDescription& model) {
         layer.addAgentFunction(AGENT_MDSC, "update_chemicals");
         layer.addAgentFunction(AGENT_VASCULAR, "update_chemicals");
     }
-
+{ flamegpu::LayerDescription l = model.newLayer("chk_break"); l.addHostFunction(chk_break); }
     // 8. Agent state transitions (killing, division decisions, etc.)
     {
         flamegpu::LayerDescription layer = model.newLayer("state_transitions");
@@ -116,7 +132,7 @@ void defineMainModelLayers(flamegpu::ModelDescription& model) {
         layer.addAgentFunction(AGENT_MDSC, "state_step");
         layer.addAgentFunction(AGENT_VASCULAR, "state_step");
     }
-
+{ flamegpu::LayerDescription l = model.newLayer("chk_break2"); l.addHostFunction(chk_break); }
     // 9. Agents compute their chemical production/consumption rates
     {
         flamegpu::LayerDescription layer = model.newLayer("compute_chemical_sources");
@@ -145,6 +161,7 @@ void defineMainModelLayers(flamegpu::ModelDescription& model) {
         flamegpu::LayerDescription layer = model.newLayer("zero_occ_grid");
         layer.addHostFunction(zero_occupancy_grid);
     }
+    { flamegpu::LayerDescription l = model.newLayer("chk_after_zero_occ"); l.addHostFunction(chk_after_zero_occ); }
     {
         // All agent types write their position atomically in parallel.
         flamegpu::LayerDescription layer = model.newLayer("write_to_occ_grid");
@@ -154,6 +171,7 @@ void defineMainModelLayers(flamegpu::ModelDescription& model) {
         layer.addAgentFunction(AGENT_MDSC,        "write_to_occ_grid");
         layer.addAgentFunction(AGENT_VASCULAR,    "write_to_occ_grid");
     }
+    { flamegpu::LayerDescription l = model.newLayer("chk_after_write_occ"); l.addHostFunction(chk_after_write_occ); }
 
     // 13. Single-phase movement via occ_grid (replaces per-cell-type submodels).
     // Each agent type gets N repeated move layers matching its XML move step count.
@@ -175,22 +193,27 @@ void defineMainModelLayers(flamegpu::ModelDescription& model) {
             flamegpu::LayerDescription layer = model.newLayer("move_cancer_" + std::to_string(i));
             layer.addAgentFunction(AGENT_CANCER_CELL, "move");
         }
+        { flamegpu::LayerDescription l = model.newLayer("chk_after_move_cancer"); l.addHostFunction(chk_after_move_cancer); }
         for (int i = 0; i < tcell_steps; i++) {
             flamegpu::LayerDescription layer = model.newLayer("move_tcell_" + std::to_string(i));
             layer.addAgentFunction(AGENT_TCELL, "move");
         }
+        { flamegpu::LayerDescription l = model.newLayer("chk_after_move_tcell"); l.addHostFunction(chk_after_move_tcell); }
         for (int i = 0; i < treg_steps; i++) {
             flamegpu::LayerDescription layer = model.newLayer("move_treg_" + std::to_string(i));
             layer.addAgentFunction(AGENT_TREG, "move");
         }
+        { flamegpu::LayerDescription l = model.newLayer("chk_after_move_treg"); l.addHostFunction(chk_after_move_treg); }
         for (int i = 0; i < mdsc_steps; i++) {
             flamegpu::LayerDescription layer = model.newLayer("move_mdsc_" + std::to_string(i));
             layer.addAgentFunction(AGENT_MDSC, "move");
         }
+        { flamegpu::LayerDescription l = model.newLayer("chk_after_move_mdsc"); l.addHostFunction(chk_after_move_mdsc); }
         {
             flamegpu::LayerDescription layer = model.newLayer("move_vascular");
             layer.addAgentFunction(AGENT_VASCULAR, "move");
         }
+        { flamegpu::LayerDescription l = model.newLayer("chk_after_move_vas"); l.addHostFunction(chk_after_move_vas); }
     }
 
     // 14. Single-phase division (atomicCAS replaces select → execute pair).
@@ -200,19 +223,22 @@ void defineMainModelLayers(flamegpu::ModelDescription& model) {
         flamegpu::LayerDescription layer = model.newLayer("divide_cancer");
         layer.addAgentFunction(AGENT_CANCER_CELL, "divide");
     }
+    { flamegpu::LayerDescription l = model.newLayer("chk_after_div_cancer"); l.addHostFunction(chk_after_div_cancer); }
     {
         flamegpu::LayerDescription layer = model.newLayer("divide_tcell");
         layer.addAgentFunction(AGENT_TCELL, "divide");
     }
+    { flamegpu::LayerDescription l = model.newLayer("chk_after_div_tcell"); l.addHostFunction(chk_after_div_tcell); }
     {
         flamegpu::LayerDescription layer = model.newLayer("divide_treg");
         layer.addAgentFunction(AGENT_TREG, "divide");
     }
-
+    { flamegpu::LayerDescription l = model.newLayer("chk_after_div_treg"); l.addHostFunction(chk_after_div_treg); }
     {
         flamegpu::LayerDescription layer = model.newLayer("divide_vascular");
         layer.addAgentFunction(AGENT_VASCULAR, "vascular_divide");
     }
+    { flamegpu::LayerDescription l = model.newLayer("chk_after_div_vas"); l.addHostFunction(chk_after_div_vas); }
 
     {
         flamegpu::LayerDescription layer = model.newLayer("solve_qsp");

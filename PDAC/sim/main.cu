@@ -314,7 +314,7 @@ FLAMEGPU_STEP_FUNCTION(exportABMData) {
 FLAMEGPU_STEP_FUNCTION(stepCounter) {
     unsigned int step = FLAMEGPU->environment.getProperty<unsigned int>("current_step");
     FLAMEGPU->environment.setProperty<unsigned int>("current_step", step + 1);
-
+    
     // Suppress output during Phase 3 pre-simulation warmup
     if (PDAC::is_presim_mode_active()) return;
 

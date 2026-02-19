@@ -763,6 +763,39 @@ void initializeTHCellsFromQSP(
                 agent.setVariable<int>("divide_limit", div_limit);
                 agent.setVariable<int>("life", life);
 
+                // Initialize chemical state variables
+                agent.setVariable<float>("local_TGFB", 0.0f);
+                agent.setVariable<float>("local_IFNg", 0.0f);
+                agent.setVariable<float>("local_ArgI", 0.0f);
+
+                // Initialize chemical production rates
+                agent.setVariable<float>("IL10_release_rate", 0.0f);
+                agent.setVariable<float>("TGFB_release_rate", 0.0f);
+                agent.setVariable<float>("IL2_release_rate", 0.0f);
+                agent.setVariable<float>("TGFB_release_remain", 0.0f);
+
+                // Initialize molecular state
+                agent.setVariable<float>("PDL1_syn", 0.0f);
+                agent.setVariable<float>("CTLA4", 0.0f);
+                agent.setVariable<float>("IL2_exposure", 0.0f);
+
+                // Initialize neighbor counts
+                agent.setVariable<int>("neighbor_Tcell_count", 0);
+                agent.setVariable<int>("neighbor_Treg_count", 0);
+                agent.setVariable<int>("neighbor_cancer_count", 0);
+                agent.setVariable<int>("neighbor_all_count", 0);
+                agent.setVariable<int>("found_progenitor", 0);
+                agent.setVariable<unsigned int>("available_neighbors", 0u);
+
+                // Initialize life/death
+                agent.setVariable<int>("dead", 0);
+
+                // Initialize intent
+                agent.setVariable<int>("intent_action", 0);  // INTENT_NONE
+                agent.setVariable<int>("target_x", -1);
+                agent.setVariable<int>("target_y", -1);
+                agent.setVariable<int>("target_z", -1);
+
                 placed++;
             }
         }

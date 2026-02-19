@@ -56,6 +56,19 @@ extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER reset_recruitment_sources;
 // Occupancy grid: zero before agents write their positions each step
 extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER zero_occupancy_grid;
 
+// Debug checkpoints (insert between layers to locate crash)
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER chk_after_zero_occ;
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER chk_after_write_occ;
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER chk_after_move_cancer;
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER chk_after_move_tcell;
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER chk_after_move_treg;
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER chk_after_move_mdsc;
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER chk_after_move_vas;
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER chk_after_div_cancer;
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER chk_after_div_tcell;
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER chk_after_div_treg;
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER chk_after_div_vas;
+
 } // namespace PDAC
 
 #endif // PDE_INTEGRATION_CUH

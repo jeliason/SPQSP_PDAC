@@ -152,6 +152,20 @@ void defineTCellAgent(flamegpu::ModelDescription& model, bool include_state_divi
     // Molecular exposure
     tcell.newVariable<float>("local_IL2", 0.0f);
 
+    // Chemical gradients for chemotaxis (IFN-γ or CCL2)
+    tcell.newVariable<float>("ifng_grad_x", 0.0f);
+    tcell.newVariable<float>("ifng_grad_y", 0.0f);
+    tcell.newVariable<float>("ifng_grad_z", 0.0f);
+    tcell.newVariable<float>("ccl2_grad_x", 0.0f);
+    tcell.newVariable<float>("ccl2_grad_y", 0.0f);
+    tcell.newVariable<float>("ccl2_grad_z", 0.0f);
+
+    // Movement state for run-tumble chemotaxis
+    tcell.newVariable<float>("move_direction_x", 0.0f);
+    tcell.newVariable<float>("move_direction_y", 0.0f);
+    tcell.newVariable<float>("move_direction_z", 0.0f);
+    tcell.newVariable<int>("tumble", 0);  // 0=running, 1=tumbling
+
     // Molecular state (affects behavior)
     tcell.newVariable<float>("PDL1_syn", 0.0f);
 
@@ -243,6 +257,20 @@ void defineTRegAgent(flamegpu::ModelDescription& model, bool include_state_divid
     treg.newVariable<float>("local_IFNg", 0.0f); // might need to be gradient instead
     treg.newVariable<float>("local_ArgI", 0.0f);
 
+    // Chemical gradients for chemotaxis (IFN-γ or CCL2)
+    treg.newVariable<float>("ifng_grad_x", 0.0f);
+    treg.newVariable<float>("ifng_grad_y", 0.0f);
+    treg.newVariable<float>("ifng_grad_z", 0.0f);
+    treg.newVariable<float>("ccl2_grad_x", 0.0f);
+    treg.newVariable<float>("ccl2_grad_y", 0.0f);
+    treg.newVariable<float>("ccl2_grad_z", 0.0f);
+
+    // Movement state for run-tumble chemotaxis
+    treg.newVariable<float>("move_direction_x", 0.0f);
+    treg.newVariable<float>("move_direction_y", 0.0f);
+    treg.newVariable<float>("move_direction_z", 0.0f);
+    treg.newVariable<int>("tumble", 0);  // 0=running, 1=tumbling
+
     // Chemical production (Tregs are major source of IL10 and TGF-beta)
     treg.newVariable<float>("IL10_release_rate", 0.0f);
     treg.newVariable<float>("TGFB_release_rate", 0.0f);
@@ -316,6 +344,17 @@ void defineMDSCAgent(flamegpu::ModelDescription& model, bool include_state) {
     mdsc.newVariable<int>("z");
 
     mdsc.newVariable<float>("local_IFNg", 0.0f);
+
+    // Chemical gradients for chemotaxis (CCL2 primarily)
+    mdsc.newVariable<float>("ccl2_grad_x", 0.0f);
+    mdsc.newVariable<float>("ccl2_grad_y", 0.0f);
+    mdsc.newVariable<float>("ccl2_grad_z", 0.0f);
+
+    // Movement state for run-tumble chemotaxis
+    mdsc.newVariable<float>("move_direction_x", 0.0f);
+    mdsc.newVariable<float>("move_direction_y", 0.0f);
+    mdsc.newVariable<float>("move_direction_z", 0.0f);
+    mdsc.newVariable<int>("tumble", 0);  // 0=running, 1=tumbling
 
     // Chemical production (MDSCs produce immunosuppressive factors)
     mdsc.newVariable<float>("NO_release_rate", 0.0f);    // Nitric oxide

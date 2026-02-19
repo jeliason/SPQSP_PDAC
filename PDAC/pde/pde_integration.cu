@@ -842,4 +842,18 @@ FLAMEGPU_HOST_FUNCTION(zero_occupancy_grid) {
     occ.zero();
 }
 
+// ---- Debug checkpoints: disabled for production ----
+FLAMEGPU_HOST_FUNCTION(chk_after_zero_occ)    { /* disabled */ }
+FLAMEGPU_HOST_FUNCTION(chk_after_write_occ)   { /* disabled */ }
+FLAMEGPU_HOST_FUNCTION(chk_after_move_cancer) { /* disabled */ }
+FLAMEGPU_HOST_FUNCTION(chk_after_move_tcell)  { /* disabled */ }
+FLAMEGPU_HOST_FUNCTION(chk_after_move_treg)   { /* disabled */ }
+FLAMEGPU_HOST_FUNCTION(chk_after_move_mdsc)   { /* disabled */ }
+FLAMEGPU_HOST_FUNCTION(chk_after_move_vas)    { /* disabled */ }
+FLAMEGPU_HOST_FUNCTION(chk_after_div_cancer)  { /* disabled */ }
+FLAMEGPU_HOST_FUNCTION(chk_after_div_tcell)   { /* disabled */ }
+FLAMEGPU_HOST_FUNCTION(chk_after_div_treg)    { /* disabled */ }
+FLAMEGPU_HOST_FUNCTION(chk_after_div_vas)     { /* disabled */ }
+FLAMEGPU_HOST_FUNCTION(chk_start_step)     { /* disabled */ }
+FLAMEGPU_HOST_FUNCTION(chk_break)     { /* disabled */ }
 } // namespace PDAC

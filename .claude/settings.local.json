@@ -10,7 +10,8 @@
       "Bash(./build/bin/pdac:*)",
       "Bash(nsys stats:*)",
       "Bash(python3:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(CUDA_LAUNCH_BLOCKING=1 ./build/bin/pdac:*)"
     ]
   }
 }

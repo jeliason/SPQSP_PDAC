@@ -91,10 +91,9 @@ FLAMEGPU_HOST_FUNCTION(solve_qsp_step) {
     FLAMEGPU->environment.setProperty<float>("qsp_tum_vol", static_cast<float>(qsp_state.tum_vol));
     FLAMEGPU->environment.setProperty<float>("qsp_tum_cmax", static_cast<float>(qsp_state.tum_cmax));
 
-    FLAMEGPU->environment.setProperty<float>("qsp_f_tum_cap", static_cast<float>(qsp_state.cc_tumor) / 
-                                                            FLAMEGPU->environment.getProperty<float>("AVOGADROS") / 
+    FLAMEGPU->environment.setProperty<float>("qsp_f_tum_cap", static_cast<float>(qsp_state.cc_tumor) /
+                                                            FLAMEGPU->environment.getProperty<float>("AVOGADROS") /
                                                             qsp_state.tum_cmax);
-
 
     // // Debug output
     // if (step % 10 == 0) {

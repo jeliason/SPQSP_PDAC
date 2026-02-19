@@ -491,7 +491,7 @@ FLAMEGPU_AGENT_FUNCTION(cancer_cell_state_step, flamegpu::MessageNone, flamegpu:
             FLAMEGPU->setVariable<int>("divideCD", -1);
             FLAMEGPU->setVariable<int>("divideFlag", 0);
 
-            const float mean_life = FLAMEGPU->environment.getProperty<float>("cancer_senescent_mean_life");
+            const float mean_life = FLAMEGPU->environment.getProperty<float>("PARAM_CANCER_SENESCENT_MEAN_LIFE");
             const float rand_val = FLAMEGPU->random.uniform<float>();
             const int life = static_cast<int>(-mean_life * logf(rand_val + 0.0001f) + 0.5f);
             FLAMEGPU->setVariable<int>("life", life > 0 ? life : 1);
@@ -1004,7 +1004,7 @@ FLAMEGPU_AGENT_FUNCTION(cancer_divide, flamegpu::MessageNone, flamegpu::MessageN
             }
         }
 
-        // Set common daughter variables
+        // Set common daughter variables (minimal - rely on FLAMEGPU defaults for the rest)
         FLAMEGPU->agent_out.setVariable<int>("neighbor_Teff_count", 0);
         FLAMEGPU->agent_out.setVariable<int>("neighbor_Treg_count", 0);
         FLAMEGPU->agent_out.setVariable<int>("neighbor_cancer_count", 0);
