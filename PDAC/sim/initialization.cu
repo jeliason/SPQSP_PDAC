@@ -1442,12 +1442,15 @@ void initializeToQSP(
 
     // T cells: none at init — recruited during pre-simulation via QSP
     {
+        std::cout << "[DEBUG] Setting T cells population..." << std::endl;
         flamegpu::AgentVector tcell_pop(model.Agent(AGENT_TCELL));
         simulation.setPopulationData(tcell_pop);  // empty
+        std::cout << "[DEBUG] T cells population set" << std::endl;
     }
 
     // TH and TReg cells: probability-based placement across all voxels
     {
+        std::cout << "[DEBUG] Initializing TH/TReg cells..." << std::endl;
         flamegpu::AgentVector treg_pop(model.Agent(AGENT_TREG));
         initializeTHCellsFromQSP(
             treg_pop,
@@ -1459,44 +1462,56 @@ void initializeToQSP(
             config.grid_x, config.grid_y, config.grid_z,
             p_treg, occupied,
             treg_life, treg_div_limit, treg_div_interval);
+        std::cout << "[DEBUG] Setting TReg population (" << treg_pop.size() << " agents)..." << std::endl;
         simulation.setPopulationData(treg_pop);
+        std::cout << "[DEBUG] TReg population set" << std::endl;
     }
 
     // MDSCs: probability-based placement across all voxels
     {
+        std::cout << "[DEBUG] Initializing MDSCs..." << std::endl;
         flamegpu::AgentVector mdsc_pop(model.Agent(AGENT_MDSC));
         initializeMDSCsFromQSP(
             mdsc_pop,
             config.grid_x, config.grid_y, config.grid_z,
             p_mdsc, occupied,
             mdsc_life);
+        std::cout << "[DEBUG] Setting MDSC population (" << mdsc_pop.size() << " agents)..." << std::endl;
         simulation.setPopulationData(mdsc_pop);
+        std::cout << "[DEBUG] MDSC population set" << std::endl;
     }
 
     // Macrophages: probability-based placement across all voxels
     {
+        std::cout << "[DEBUG] Initializing Macrophages..." << std::endl;
         flamegpu::AgentVector mac_pop(model.Agent(AGENT_MACROPHAGE));
         initializeMacsFromQSP(
             mac_pop,
             config.grid_x, config.grid_y, config.grid_z,
             p_mac, occupied,
             mac_life);
+        std::cout << "[DEBUG] Setting Macrophage population (" << mac_pop.size() << " agents)..." << std::endl;
         simulation.setPopulationData(mac_pop);
+        std::cout << "[DEBUG] Macrophage population set" << std::endl;
     }
 
     // Fibroblasts: probability-based placement across all voxels
     {
+        std::cout << "[DEBUG] Initializing Fibroblasts..." << std::endl;
         flamegpu::AgentVector fib_pop(model.Agent(AGENT_FIBROBLAST));
         initializeFibroblastsFromQSP(
             fib_pop,
             config.grid_x, config.grid_y, config.grid_z,
             p_fib, occupied,
             fib_life);
+        std::cout << "[DEBUG] Setting Fibroblast population (" << fib_pop.size() << " agents)..." << std::endl;
         simulation.setPopulationData(fib_pop);
+        std::cout << "[DEBUG] Fibroblast population set" << std::endl;
     }
 
     // Initialize vascular cells (same logic as initializeAllAgents)
     {
+        std::cout << "[DEBUG] Initializing Vascular cells..." << std::endl;
         flamegpu::AgentVector vascular_vec(model.Agent(AGENT_VASCULAR));
         if (config.vascular_mode == "random") {
             initializeVascularCellsRandom(
@@ -1510,7 +1525,9 @@ void initializeToQSP(
                       << "', falling back to test mode" << std::endl;
             initializeVascularCellsTest(vascular_vec, config.grid_x, config.grid_y, config.grid_z);
         }
+        std::cout << "[DEBUG] Setting Vascular population (" << vascular_vec.size() << " agents)..." << std::endl;
         simulation.setPopulationData(vascular_vec);
+        std::cout << "[DEBUG] Vascular population set" << std::endl;
     }
 
     std::cout << "QSP-based agent initialization complete\n" << std::endl;

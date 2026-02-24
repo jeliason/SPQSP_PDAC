@@ -127,6 +127,15 @@ private:
         return substrate * (config_.nx * config_.ny * config_.nz) + idx(x, y, z);
     }
 
+    // CG solver for diffusion: solves (I - dt*D*∇²)C_new = C_old
+    int solve_cg_diffusion(
+        float* d_C_current,
+        const float* d_RHS,
+        float D,
+        float dt,
+        float dx,
+        int n);
+
     // CG solver internals
     int solve_implicit_cg(float* d_C, const float* d_rhs, const float* d_uptakes_per_voxel, float D, float lambda, float dt, float dx);
 

@@ -578,6 +578,8 @@ int main(int argc, const char** argv) {
         std::cout << "Initializing agents with default distribution (init_method=0)..." << std::endl;
         PDAC::initializeAllAgents(simulation, *model, config);
     }
+    std::cout << "[DEBUG] Agent initialization complete" << std::endl;
+    std::cout.flush();
     
     // ========== PHASE 3: PRE-SIMULATION (QSP-seeded init only) ==========
     // Run ABM+QSP (no drugs) until QSP tumor volume reaches 1.0× target diameter.
@@ -596,7 +598,11 @@ int main(int argc, const char** argv) {
         unsigned int presim_step = 0;
 
         while (cur_vol < full_target_vol && presim_step < max_presim_steps) {
+            std::cout << "[DEBUG] About to call simulation.step() for presim step " << presim_step << std::endl;
+            std::cout.flush();
             bool ok = simulation.step();
+            std::cout << "[DEBUG] Returned from simulation.step() successfully" << std::endl;
+            std::cout.flush();
             if (!ok) {
                 std::cout << "  Pre-simulation: ABM terminated early (all cancer cells gone)" << std::endl;
                 break;

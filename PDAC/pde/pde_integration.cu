@@ -496,25 +496,31 @@ void initialize_pde_solver(int grid_x, int grid_y, int grid_z,
 
 // Call this after model initialization but before simulation starts
 void set_pde_pointers_in_environment(flamegpu::ModelDescription& model) {
-    if (!g_pde_solver) return;
-    
-    flamegpu::EnvironmentDescription env = model.Environment();
-    
+    if (!g_pde_solver) {
+        std::cerr << "[ERROR] g_pde_solver is NULL!" << std::endl;
+        return;
+    }
+
+    std::cout << "[DEBUG] Storing PDE device pointers in environment..." << std::endl;
+
     // Store device pointers as unsigned long long (can be cast back to float*)
     for (int sub = 0; sub < NUM_SUBSTRATES; sub++) {
         std::string concentration_key = "pde_concentration_ptr_" + std::to_string(sub);
         std::string source_key = "pde_source_ptr_" + std::to_string(sub);
-        
+
         uintptr_t conc_ptr = reinterpret_cast<uintptr_t>(g_pde_solver->get_device_concentration_ptr(sub));
         uintptr_t src_ptr = reinterpret_cast<uintptr_t>(g_pde_solver->get_device_source_ptr(sub));
-        
-        env.newProperty<unsigned long long>(concentration_key, static_cast<unsigned long long>(conc_ptr));
-        env.newProperty<unsigned long long>(source_key, static_cast<unsigned long long>(src_ptr));
+
+        std::cout << "[DEBUG] Sub " << sub << ": conc_ptr=" << (void*)conc_ptr << " src_ptr=" << (void*)src_ptr << std::endl;
+
+        model.Environment().newProperty<unsigned long long>(concentration_key, static_cast<unsigned long long>(conc_ptr));
+        model.Environment().newProperty<unsigned long long>(source_key, static_cast<unsigned long long>(src_ptr));
     }
 
     // Store recruitment sources pointer
     uintptr_t recruit_ptr = reinterpret_cast<uintptr_t>(g_pde_solver->get_device_recruitment_sources_ptr());
-    env.newProperty<unsigned long long>("pde_recruitment_sources_ptr", static_cast<unsigned long long>(recruit_ptr));
+    std::cout << "[DEBUG] recruit_ptr=" << (void*)recruit_ptr << std::endl;
+    model.Environment().newProperty<unsigned long long>("pde_recruitment_sources_ptr", static_cast<unsigned long long>(recruit_ptr));
 
     std::cout << "PDE device pointers stored in FLAME GPU environment" << std::endl;
 }

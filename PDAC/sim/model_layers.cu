@@ -1,10 +1,42 @@
 #include "flamegpu/flamegpu.h"
 #include <string>
+#include <iostream>
 
 #include "../core/common.cuh"
 #include "../pde/pde_integration.cuh"
 
 namespace PDAC {
+
+// Debug host functions for tracing execution
+FLAMEGPU_HOST_FUNCTION(debug_layer_start) {
+    std::cout << "[DEBUG] Layer execution order check" << std::endl;
+    std::cout.flush();
+}
+
+FLAMEGPU_HOST_FUNCTION(debug_before_broadcast) {
+    std::cout << "[DEBUG] Before broadcast layers" << std::endl;
+    std::cout.flush();
+}
+
+FLAMEGPU_HOST_FUNCTION(debug_before_state_transitions) {
+    std::cout << "[DEBUG] Before state_transitions (agent functions with random)" << std::endl;
+    std::cout.flush();
+}
+
+FLAMEGPU_HOST_FUNCTION(debug_before_movement) {
+    std::cout << "[DEBUG] Before movement layers (most random calls)" << std::endl;
+    std::cout.flush();
+}
+
+FLAMEGPU_HOST_FUNCTION(debug_before_division) {
+    std::cout << "[DEBUG] Before division layers" << std::endl;
+    std::cout.flush();
+}
+
+FLAMEGPU_HOST_FUNCTION(debug_after_state_transitions) {
+    std::cout << "[DEBUG] State transitions complete" << std::endl;
+    std::cout.flush();
+}
 
 // Declare HostFunction objects from pde_integration.cu
 extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER update_agent_chemicals;
@@ -61,8 +93,8 @@ void defineMainModelLayers(flamegpu::ModelDescription& model) {
     }
     // Mark vascular T cell sources (phalanx cells based on IFN-γ)
     {
-        flamegpu::LayerDescription layer = model.newLayer("mark_vascular_t_sources");
-        layer.addAgentFunction(AGENT_VASCULAR, "mark_t_sources");
+       flamegpu::LayerDescription layer = model.newLayer("mark_vascular_t_sources");
+       layer.addAgentFunction(AGENT_VASCULAR, "mark_t_sources");
     }
     
     // Mark MDSC sources (all voxels based on CCL2)
@@ -92,33 +124,34 @@ void defineMainModelLayers(flamegpu::ModelDescription& model) {
     }
     // 1-4. Broadcast (separate layers required by FLAMEGPU2)
     // Messages accumulate across layers within the same step
+    // TEMPORARILY DISABLED FOR DEBUGGING RANDOMMANAGER ERROR
     {
-        flamegpu::LayerDescription layer = model.newLayer("final_broadcast_cancer");
-        layer.addAgentFunction(AGENT_CANCER_CELL, "broadcast_location");
+       flamegpu::LayerDescription layer = model.newLayer("final_broadcast_cancer");
+       layer.addAgentFunction(AGENT_CANCER_CELL, "broadcast_location");
     }
     {
-        flamegpu::LayerDescription layer = model.newLayer("final_broadcast_tcell");
-        layer.addAgentFunction(AGENT_TCELL, "broadcast_location");
+       flamegpu::LayerDescription layer = model.newLayer("final_broadcast_tcell");
+       layer.addAgentFunction(AGENT_TCELL, "broadcast_location");
     }
     {
-        flamegpu::LayerDescription layer = model.newLayer("final_broadcast_treg");
-        layer.addAgentFunction(AGENT_TREG, "broadcast_location");
+       flamegpu::LayerDescription layer = model.newLayer("final_broadcast_treg");
+       layer.addAgentFunction(AGENT_TREG, "broadcast_location");
     }
     {
-        flamegpu::LayerDescription layer = model.newLayer("final_broadcast_mdsc");
-        layer.addAgentFunction(AGENT_MDSC, "broadcast_location");
+       flamegpu::LayerDescription layer = model.newLayer("final_broadcast_mdsc");
+       layer.addAgentFunction(AGENT_MDSC, "broadcast_location");
     }
     {
-        flamegpu::LayerDescription layer = model.newLayer("final_broadcast_vascular");
-        layer.addAgentFunction(AGENT_VASCULAR, "broadcast_location");
+       flamegpu::LayerDescription layer = model.newLayer("final_broadcast_vascular");
+       layer.addAgentFunction(AGENT_VASCULAR, "broadcast_location");
     }
     {
-        flamegpu::LayerDescription layer = model.newLayer("final_broadcast_macrophage");
-        layer.addAgentFunction(AGENT_MACROPHAGE, "broadcast_location");
+       flamegpu::LayerDescription layer = model.newLayer("final_broadcast_macrophage");
+       layer.addAgentFunction(AGENT_MACROPHAGE, "broadcast_location");
     }
     {
-        flamegpu::LayerDescription layer = model.newLayer("final_broadcast_fibroblast");
-        layer.addAgentFunction(AGENT_FIBROBLAST, "broadcast_location");
+       flamegpu::LayerDescription layer = model.newLayer("final_broadcast_fibroblast");
+       layer.addAgentFunction(AGENT_FIBROBLAST, "broadcast_location");
     }
     // 5. Scan neighbors
     {
@@ -145,6 +178,11 @@ void defineMainModelLayers(flamegpu::ModelDescription& model) {
         // layer.addAgentFunction(AGENT_MACROPHAGE, "update_chemicals"); // Macrophage states updated in state step
         layer.addAgentFunction(AGENT_VASCULAR, "update_chemicals");
     }
+    // DEBUG: Before state transitions
+    {
+        flamegpu::LayerDescription layer = model.newLayer("debug_before_state_transitions_layer");
+        layer.addHostFunction(debug_before_state_transitions);
+    }
     // 8. Agent state transitions (killing, division decisions, etc.)
     {
         flamegpu::LayerDescription layer = model.newLayer("state_transitions");
@@ -156,8 +194,17 @@ void defineMainModelLayers(flamegpu::ModelDescription& model) {
         layer.addAgentFunction(AGENT_FIBROBLAST, "state_step");
         layer.addAgentFunction(AGENT_VASCULAR, "state_step");
     }
+    // DEBUG: After state transitions
+    {
+        flamegpu::LayerDescription layer = model.newLayer("debug_after_state_transitions_layer");
+        layer.addHostFunction(debug_after_state_transitions);
+    }
     // 9. Agents compute their chemical production/consumption rates
     // { flamegpu::LayerDescription l = model.newLayer("chk_break"); l.addHostFunction(chk_break); }
+    {
+        flamegpu::LayerDescription layer = model.newLayer("debug_before_compute_sources");
+        layer.addHostFunction(debug_before_state_transitions); // Reuse same function, just for tracking
+    }
     {
         flamegpu::LayerDescription layer = model.newLayer("compute_chemical_sources");
         layer.addAgentFunction(AGENT_CANCER_CELL, "compute_chemical_sources");
@@ -219,6 +266,12 @@ void defineMainModelLayers(flamegpu::ModelDescription& model) {
     // Each agent type gets N repeated move layers matching its XML move step count.
     // Agents CAS/atomicAdd to claim voxels; releases old voxel atomically on success.
     // Vascular tip cells use run-tumble (no occ_grid); stalk/phalanx don't move.
+
+    // DEBUG: Before movement (this is where most random calls happen)
+    {
+        flamegpu::LayerDescription layer = model.newLayer("debug_before_movement_layer");
+        layer.addHostFunction(debug_before_movement);
+    }
 
     {
         flamegpu::LayerDescription layer = model.newLayer("reset_moves_cancer");
@@ -282,6 +335,12 @@ void defineMainModelLayers(flamegpu::ModelDescription& model) {
             layer.addAgentFunction(AGENT_VASCULAR, "move");
         }
         { flamegpu::LayerDescription l = model.newLayer("chk_after_move_vas"); l.addHostFunction(chk_after_move_vas); }
+    }
+
+    // DEBUG: Before division
+    {
+        flamegpu::LayerDescription layer = model.newLayer("debug_before_division_layer");
+        layer.addHostFunction(debug_before_division);
     }
 
     // 14. Single-phase division (atomicCAS replaces select → execute pair).
