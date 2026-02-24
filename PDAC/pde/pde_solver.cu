@@ -401,9 +401,14 @@ void PDESolver::initialize() {
     CUDA_CHECK(cudaMemset(d_concentrations_current_, 0, total_size));
     CUDA_CHECK(cudaMemset(d_concentrations_next_, 0, total_size));
 
-    // Allocate source array (shared, reset per substrate)
-    CUDA_CHECK(cudaMalloc(&d_sources_, voxel_size));
-    CUDA_CHECK(cudaMemset(d_sources_, 0, voxel_size));
+    // Allocate source array for ALL substrates (not just one!)
+    CUDA_CHECK(cudaMalloc(&d_sources_, total_size));  // FIX: was voxel_size, now total_size
+    CUDA_CHECK(cudaMemset(d_sources_, 0, total_size));
+
+    // Allocate recruitment sources array (int per voxel)
+    size_t recruitment_size = total_voxels * sizeof(int);
+    CUDA_CHECK(cudaMalloc(&d_recruitment_sources_, recruitment_size));  // FIX: was missing
+    CUDA_CHECK(cudaMemset(d_recruitment_sources_, 0, recruitment_size));
 
     // Allocate CG working arrays
     CUDA_CHECK(cudaMalloc(&d_cg_r_, voxel_size));
@@ -422,11 +427,15 @@ void PDESolver::initialize() {
 
 void PDESolver::reset_sources() {
     int total_voxels = config_.nx * config_.ny * config_.nz;
-    CUDA_CHECK(cudaMemset(d_sources_, 0, total_voxels * sizeof(float)));
+    size_t total_size = total_voxels * config_.num_substrates * sizeof(float);  // FIX: reset all substrates
+    CUDA_CHECK(cudaMemset(d_sources_, 0, total_size));
 }
 
 void PDESolver::reset_recruitment_sources() {
-    // Stub for compatibility with old integration code
+    if (!d_recruitment_sources_) return;  // FIX: actually reset the memory
+    int total_voxels = config_.nx * config_.ny * config_.nz;
+    size_t recruitment_size = total_voxels * sizeof(int);
+    CUDA_CHECK(cudaMemset(d_recruitment_sources_, 0, recruitment_size));
 }
 
 void PDESolver::reset_uptakes() {
