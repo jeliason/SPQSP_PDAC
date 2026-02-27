@@ -19,6 +19,9 @@
 // Exposed by qsp_integration.cu — true during Phase 3 pre-simulation
 namespace PDAC { extern bool is_presim_mode_active(); }
 
+// QSP CSV export step function (defined in qsp_integration.cu)
+extern flamegpu::FLAMEGPU_STEP_FUNCTION_POINTER exportQSPData;
+
 namespace PDAC {
     std::unique_ptr<flamegpu::ModelDescription> buildModel(
         int grid_x, int grid_y, int grid_z, float voxel_size,
@@ -252,27 +255,21 @@ void exportABMData_step0(flamegpu::CUDASimulation& sim, flamegpu::ModelDescripti
         }
     }
 
-    // Vasculature
+    // Vasculature — TIP and PHALANX only (matches HCC CPU output; STALK excluded)
     {
         flamegpu::AgentVector vas_pop(model.Agent(PDAC::AGENT_VASCULAR));
         sim.getPopulationData(vas_pop);
         for (unsigned int i = 0; i < vas_pop.size(); ++i) {
+            int vas_state = vas_pop[i].getVariable<int>("cell_state");
+            if (vas_state == 1) continue;  // Skip STALK
             unsigned int id = vas_pop[i].getID();
             int x = vas_pop[i].getVariable<int>("x");
             int y = vas_pop[i].getVariable<int>("y");
             int z = vas_pop[i].getVariable<int>("z");
-            int vas_state = vas_pop[i].getVariable<int>("cell_state");
-            int life = 0;
-            std::string state_name;
-            switch (vas_state) {
-                case 0: state_name = "TIP"; break;
-                case 1: state_name = "STALK"; break;
-                case 2: state_name = "PHALANX"; break;
-                default: state_name = "UNKNOWN"; break;
-            }
+            std::string state_name = (vas_state == 0) ? "TIP" : "PHALANX";
             file << "VAS," << id << "," << x << "," << y << "," << z << ","
                  << state_name
-                 << ",life=" << life << "\n";
+                 << ",life=" << 0 << "\n";
         }
     }
     file.close();
@@ -427,25 +424,20 @@ FLAMEGPU_STEP_FUNCTION(exportABMData) {
         }
     }
 
-    // Vasculature
+    // Vasculature — TIP and PHALANX only (matches HCC CPU output; STALK excluded)
     {
         auto agent = FLAMEGPU->agent(PDAC::AGENT_VASCULAR);
         unsigned int count = agent.count();
         if (count > 0) {
             flamegpu::DeviceAgentVector vas_pop = agent.getPopulationData();
             for (unsigned int i = 0; i < count; ++i) {
+                int cell_state = vas_pop[i].getVariable<int>("cell_state");
+                if (cell_state == 1) continue;  // Skip STALK
                 unsigned int id = vas_pop[i].getID();
                 int x = vas_pop[i].getVariable<int>("x");
                 int y = vas_pop[i].getVariable<int>("y");
                 int z = vas_pop[i].getVariable<int>("z");
-                int cell_state = vas_pop[i].getVariable<int>("cell_state");
-                std::string state_name;
-                switch (cell_state) {
-                    case 0: state_name = "TIP"; break;
-                    case 1: state_name = "STALK"; break;
-                    case 2: state_name = "PHALANX"; break;
-                    default: state_name = "UNKNOWN"; break;
-                }
+                std::string state_name = (cell_state == 0) ? "TIP" : "PHALANX";
 
                 file << "VAS," << id << "," << x << "," << y << "," << z << ","
                      << state_name
@@ -588,9 +580,28 @@ int main(int argc, const char** argv) {
     if (config.abm_out) {
         model->addStepFunction(exportABMData);
     }
+    model->addStepFunction(exportQSPData);
     model->addStepFunction(stepCounter);
     model->addExitCondition(checkSimulationEnd);
-    
+
+    // ========== ALLOCATE GPU MEMORY FOR EVENT COUNTERS ==========
+    // Do this BEFORE creating CUDASimulation so environment properties are synced
+    unsigned int* device_event_counters = nullptr;
+    cudaMalloc(&device_event_counters, 5 * sizeof(unsigned int));
+    cudaMemset(device_event_counters, 0, 5 * sizeof(unsigned int));
+
+    // Store pointers to event counters in model environment (before CUDASimulation init)
+    model->Environment().setProperty<uint64_t>("event_tcell_prolif_ptr",
+        reinterpret_cast<uint64_t>(device_event_counters));
+    model->Environment().setProperty<uint64_t>("event_tcell_recruit_ptr",
+        reinterpret_cast<uint64_t>(device_event_counters + 1));
+    model->Environment().setProperty<uint64_t>("event_th_prolif_ptr",
+        reinterpret_cast<uint64_t>(device_event_counters + 2));
+    model->Environment().setProperty<uint64_t>("event_th_recruit_ptr",
+        reinterpret_cast<uint64_t>(device_event_counters + 3));
+    model->Environment().setProperty<uint64_t>("event_treg_prolif_ptr",
+        reinterpret_cast<uint64_t>(device_event_counters + 4));
+
     // ========== CREATE SIMULATION ==========
     // Increase CUDA per-thread stack size for complex kernels (default 1KB is too small
     // for cancer_cell_state_step with inlined Newton-Raphson double-precision math)
@@ -628,11 +639,11 @@ int main(int argc, const char** argv) {
         unsigned int presim_step = 0;
 
         while (cur_vol < full_target_vol && presim_step < max_presim_steps) {
-            std::cout << "[DEBUG] About to call simulation.step() for presim step " << presim_step << std::endl;
-            std::cout.flush();
+            // std::cout << "[DEBUG] About to call simulation.step() for presim step " << presim_step << std::endl;
+            // std::cout.flush();
             bool ok = simulation.step();
-            std::cout << "[DEBUG] Returned from simulation.step() successfully" << std::endl;
-            std::cout.flush();
+            // std::cout << "[DEBUG] Returned from simulation.step() successfully" << std::endl;
+            // std::cout.flush();
             if (!ok) {
                 std::cout << "  Pre-simulation: ABM terminated early (all cancer cells gone)" << std::endl;
                 break;
@@ -660,6 +671,12 @@ int main(int argc, const char** argv) {
     // ========== RUN SIMULATION ==========
     std::cout << "\n=== Starting Simulation ===" << std::endl;
 
+    // Open event output file for per-step event tracking
+    std::ofstream event_file("outputs/event.csv");
+    if (event_file.is_open()) {
+        event_file << "Step,prolif.CD8.cytotoxic,recruit.CD8.effector,prolif.Th.default,recruit.Th.default,prolif.Treg.default\n";
+    }
+
     // Manual stepping loop with NVTX markers for profiling
     const unsigned int total_steps = simulation.SimulationConfig().steps;
     for (unsigned int i = 0; i < total_steps; i++) {
@@ -667,10 +684,29 @@ int main(int argc, const char** argv) {
         bool continue_sim = simulation.step();
         nvtxRangePop();
 
+        // Read event counts from GPU and output
+        if (event_file.is_open()) {
+            unsigned int host_events[5];
+            cudaMemcpy(host_events, device_event_counters, 5 * sizeof(unsigned int), cudaMemcpyDeviceToHost);
+
+            // Output: prolif.CD8.cytotoxic, recruit.CD8.effector, prolif.Th.default, recruit.Th.default, prolif.Treg.default
+            event_file << i << "," << host_events[0] << "," << host_events[1] << ","
+                       << host_events[2] << "," << host_events[3] << "," << host_events[4] << "\n";
+            event_file.flush();
+
+            // Reset counters for next step
+            cudaMemset(device_event_counters, 0, 5 * sizeof(unsigned int));
+        }
+
         if (!continue_sim) {
             std::cout << "Simulation terminated early at step " << i << std::endl;
             break;
         }
+    }
+
+    if (event_file.is_open()) {
+        event_file.close();
+        std::cout << "Created: outputs/event.csv" << std::endl;
     }
 
     // ========== REPORT RESULTS ==========
@@ -711,9 +747,14 @@ int main(int argc, const char** argv) {
                   << ", Cytotoxic: " << cyt_count
                   << ", Suppressed: " << supp_count << std::endl;
     }
-    
+
     // ========== CLEANUP ==========
     PDAC::cleanup_pde_solver();
+
+    // Free GPU event counter memory
+    if (device_event_counters != nullptr) {
+        cudaFree(device_event_counters);
+    }
     
     std::cout << "\nSimulation finished successfully." << std::endl;
 

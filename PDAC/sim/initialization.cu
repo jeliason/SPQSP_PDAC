@@ -176,7 +176,7 @@ void initializeTCells(
     flamegpu::AgentVector& tcell_agents,
     int grid_x, int grid_y, int grid_z,
     int tumor_radius, int num_tcells,
-    float tcell_life_mean, int div_limit,
+    float tcell_life_mean, float tcell_life_sd, int div_limit,
     float IL2_release_time, int tcell_div_interval)
 {
     const int cx = grid_x / 2;
@@ -208,9 +208,12 @@ void initializeTCells(
             continue;
         }
 
-        // Random life from exponential distribution
-        float rnd = static_cast<float>(rand()) / RAND_MAX;
-        int life = static_cast<int>(tcell_life_mean * std::log(1.0f / (rnd + 0.0001f)) + 0.5f);
+        // Use normal distribution: lifeMean + gaussian * lifeSD (Box-Muller)
+        float u1 = static_cast<float>(rand()) / RAND_MAX;
+        float u2 = static_cast<float>(rand()) / RAND_MAX;
+        if (u1 < 1e-6f) u1 = 1e-6f;
+        float z0 = std::sqrt(-2.0f * std::log(u1)) * std::cos(2.0f * 3.14159f * u2);
+        int life = static_cast<int>(tcell_life_mean + z0 * tcell_life_sd + 0.5f);
         if (life < 1) life = 1;
 
         tcell_agents.push_back();
@@ -248,7 +251,7 @@ void initializeTRegs(
     flamegpu::AgentVector& treg_agents,
     int grid_x, int grid_y, int grid_z,
     int tumor_radius, int num_tregs,
-    float treg_life_mean, int div_limit, int treg_div_interval)
+    float treg_life_mean, float treg_life_sd, int div_limit, int treg_div_interval)
 {
     const int cx = grid_x / 2;
     const int cy = grid_y / 2;
@@ -276,8 +279,12 @@ void initializeTRegs(
             continue;
         }
 
-        float rnd = static_cast<float>(rand()) / RAND_MAX;
-        int life = static_cast<int>(treg_life_mean * std::log(1.0f / (rnd + 0.0001f)) + 0.5f);
+        // Use normal distribution: lifeMean + gaussian * lifeSD (Box-Muller)
+        float u1 = static_cast<float>(rand()) / RAND_MAX;
+        float u2 = static_cast<float>(rand()) / RAND_MAX;
+        if (u1 < 1e-6f) u1 = 1e-6f;
+        float z0 = std::sqrt(-2.0f * std::log(u1)) * std::cos(2.0f * 3.14159f * u2);
+        int life = static_cast<int>(treg_life_mean + z0 * treg_life_sd + 0.5f);
         if (life < 1) life = 1;
 
         treg_agents.push_back();
@@ -799,7 +806,7 @@ void initializeTHCellsFromQSP(
     int grid_x, int grid_y, int grid_z,
     double p_th,
     std::vector<std::vector<int>>& occupied,
-    float life_mean, int div_limit, int div_interval)
+    float life_mean, float life_sd, int div_limit, int div_interval)
 {
     int placed = 0;
     for (int z = 0; z < grid_z; z++) {
@@ -810,8 +817,12 @@ void initializeTHCellsFromQSP(
                 const float rnd = static_cast<float>(rand()) / RAND_MAX;
                 if (rnd >= static_cast<float>(p_th)) continue;
 
-                float life_rnd = static_cast<float>(rand()) / RAND_MAX;
-                int life = static_cast<int>(life_mean * std::log(1.0f / (life_rnd + 1e-4f)) + 0.5f);
+                // Use normal distribution: lifeMean + gaussian * lifeSD (Box-Muller)
+                float u1 = static_cast<float>(rand()) / RAND_MAX;
+                float u2 = static_cast<float>(rand()) / RAND_MAX;
+                if (u1 < 1e-6f) u1 = 1e-6f;
+                float z0 = std::sqrt(-2.0f * std::log(u1)) * std::cos(2.0f * 3.14159f * u2);
+                int life = static_cast<int>(life_mean + z0 * life_sd + 0.5f);
                 if (life < 1) life = 1;
 
                 float div_rnd = static_cast<float>(rand()) / RAND_MAX;
@@ -866,7 +877,7 @@ void initializeTRegCellsFromQSP(
     int grid_x, int grid_y, int grid_z,
     double p_treg,
     std::vector<std::vector<int>>& occupied,
-    float life_mean, int div_limit, int div_interval)
+    float life_mean, float life_sd, int div_limit, int div_interval)
 {
     int placed = 0;
     for (int z = 0; z < grid_z; z++) {
@@ -877,8 +888,12 @@ void initializeTRegCellsFromQSP(
                 const float rnd = static_cast<float>(rand()) / RAND_MAX;
                 if (rnd >= static_cast<float>(p_treg)) continue;
 
-                float life_rnd = static_cast<float>(rand()) / RAND_MAX;
-                int life = static_cast<int>(life_mean * std::log(1.0f / (life_rnd + 1e-4f)) + 0.5f);
+                // Use normal distribution: lifeMean + gaussian * lifeSD (Box-Muller)
+                float u1 = static_cast<float>(rand()) / RAND_MAX;
+                float u2 = static_cast<float>(rand()) / RAND_MAX;
+                if (u1 < 1e-6f) u1 = 1e-6f;
+                float z0 = std::sqrt(-2.0f * std::log(u1)) * std::cos(2.0f * 3.14159f * u2);
+                int life = static_cast<int>(life_mean + z0 * life_sd + 0.5f);
                 if (life < 1) life = 1;
 
                 float div_rnd = static_cast<float>(rand()) / RAND_MAX;
@@ -1159,10 +1174,12 @@ void initializeAllAgents(
     const float prog_div = model.Environment().getProperty<float>("PARAM_FLOAT_CANCER_CELL_PROGENITOR_DIV_INTERVAL_SLICE");
     const int prog_max = model.Environment().getProperty<int>("PARAM_PROG_DIV_MAX");
     const float tcell_life = model.Environment().getProperty<float>("PARAM_T_CELL_LIFE_MEAN_SLICE");
+    const float tcell_life_sd = model.Environment().getProperty<float>("PARAM_TCELL_LIFESPAN_SD");
     const int tcell_div_limit = model.Environment().getProperty<int>("PARAM_TCELL_DIV_LIMIT");
     const float IL2_release_time = model.Environment().getProperty<float>("PARAM_TCELL_IL2_RELEASE_TIME");
     const int tcell_div_interval = model.Environment().getProperty<int>("PARAM_TCELL_DIV_INTERNAL");
     const float treg_life = model.Environment().getProperty<float>("PARAM_TCD4_LIFE_MEAN_SLICE");
+    const float treg_life_sd = model.Environment().getProperty<float>("PARAM_TCD4_LIFESPAN_SD");
     const int treg_div_limit = model.Environment().getProperty<int>("PARAM_TCD4_DIV_LIMIT");
     const int treg_div_interval = model.Environment().getProperty<int>("PARAM_TCD4_DIV_INTERNAL");
     const float mdsc_life = model.Environment().getProperty<float>("PARAM_MDSC_LIFE_MEAN_SLICE");
@@ -1183,10 +1200,10 @@ void initializeAllAgents(
     if (config.num_tcells > 0) {
         flamegpu::AgentVector tcell_pop(model.Agent(AGENT_TCELL));
         initializeTCells(
-            tcell_pop, 
+            tcell_pop,
             config.grid_x, config.grid_y, config.grid_z,
-            config.cluster_radius, config.num_tcells, 
-            tcell_life, tcell_div_limit,
+            config.cluster_radius, config.num_tcells,
+            tcell_life, tcell_life_sd, tcell_div_limit,
             IL2_release_time, tcell_div_interval);
         simulation.setPopulationData(tcell_pop);
     }
@@ -1195,10 +1212,10 @@ void initializeAllAgents(
     if (config.num_tregs > 0) {
         flamegpu::AgentVector treg_pop(model.Agent(AGENT_TREG));
         initializeTRegs(
-            treg_pop, 
+            treg_pop,
             config.grid_x, config.grid_y, config.grid_z,
-            config.cluster_radius, config.num_tregs, 
-            treg_life, treg_div_limit, treg_div_interval);
+            config.cluster_radius, config.num_tregs,
+            treg_life, treg_life_sd, treg_div_limit, treg_div_interval);
         simulation.setPopulationData(treg_pop);
     }
     
@@ -1389,6 +1406,7 @@ void initializeToQSP(
     const float IL2_release_time = model.Environment().getProperty<float>("PARAM_TCELL_IL2_RELEASE_TIME");
     const int   tcell_div_interval = model.Environment().getProperty<int>("PARAM_TCELL_DIV_INTERNAL");
     const float treg_life        = model.Environment().getProperty<float>("PARAM_TCD4_LIFE_MEAN_SLICE");
+    const float treg_life_sd     = model.Environment().getProperty<float>("PARAM_TCELL_LIFESPAN_SD_SLICE");
     const int   treg_div_limit   = model.Environment().getProperty<int>("PARAM_TCD4_DIV_LIMIT");
     const int   treg_div_interval = model.Environment().getProperty<int>("PARAM_TCD4_DIV_INTERNAL");
     const float mdsc_life        = model.Environment().getProperty<float>("PARAM_MDSC_LIFE_MEAN_SLICE");
@@ -1432,12 +1450,12 @@ void initializeToQSP(
             treg_pop,
             config.grid_x, config.grid_y, config.grid_z,
             p_th, occupied,
-            treg_life, treg_div_limit, treg_div_interval);
+            treg_life, treg_life_sd, treg_div_limit, treg_div_interval);
         initializeTRegCellsFromQSP(
             treg_pop,
             config.grid_x, config.grid_y, config.grid_z,
             p_treg, occupied,
-            treg_life, treg_div_limit, treg_div_interval);
+            treg_life, treg_life_sd, treg_div_limit, treg_div_interval);
         std::cout << "[DEBUG] Setting TReg population (" << treg_pop.size() << " agents)..." << std::endl;
         simulation.setPopulationData(treg_pop);
         std::cout << "[DEBUG] TReg population set" << std::endl;
@@ -1493,7 +1511,7 @@ void initializeToQSP(
             initializeVascularCellsRandom(
                 vascular_vec,
                 config.grid_x, config.grid_y, config.grid_z,
-                cluster_radius, /*num_segments=*/4);
+                cluster_radius, /*num_segments=*/1);
         } else if (config.vascular_mode == "test") {
             initializeVascularCellsTest(vascular_vec, config.grid_x, config.grid_y, config.grid_z);
         } else {

@@ -73,14 +73,14 @@ FLAMEGPU_AGENT_FUNCTION(cancer_count_neighbors, flamegpu::MessageSpatial3D, flam
 
             // Find direction index
             int dir_idx = -1;
-            // for (int i = 0; i < 26; i++) {
-            //     int ddx, ddy, ddz;
-            //     get_moore_direction(i, ddx, ddy, ddz);
-            //     if (ddx == dx && ddy == dy && ddz == dz) {
-            //         dir_idx = i;
-            //         break;
-            //     }
-            // }
+            for (int i = 0; i < 26; i++) {
+                int ddx, ddy, ddz;
+                get_moore_direction(i, ddx, ddy, ddz);
+                if (ddx == dx && ddy == dy && ddz == dz) {
+                    dir_idx = i;
+                    break;
+                }
+            }
 
             if (agent_type == CELL_TYPE_T) {
                 if (agent_cell_state == T_CELL_CYT || agent_cell_state == T_CELL_EFF) {
@@ -149,6 +149,14 @@ FLAMEGPU_AGENT_FUNCTION(cancer_write_to_occ_grid, flamegpu::MessageNone, flamegp
     // Cancer cells are exclusive (1 per voxel) so no atomic needed, but
     // atomicExchange ensures coherence if any races occur.
     occ[x][y][z][CELL_TYPE_CANCER].exchange(static_cast<unsigned int>(cell_state) + 1u);
+
+    // Also write to flat cancer occupancy array used by recruitment density checks.
+    const int gx = FLAMEGPU->environment.getProperty<int>("grid_size_x");
+    const int gy = FLAMEGPU->environment.getProperty<int>("grid_size_y");
+    unsigned int* cancer_occ = reinterpret_cast<unsigned int*>(
+        FLAMEGPU->environment.getProperty<uint64_t>("cancer_occ_ptr"));
+    atomicOr(&cancer_occ[z * (gx * gy) + y * gx + x], 1u);
+
     return flamegpu::ALIVE;
 }
 

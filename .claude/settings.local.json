@@ -16,7 +16,8 @@
       "Bash(du:*)",
       "Bash(/tmp/delivery_checklist.txt:*)",
       "Bash(cat:*)",
-      "Bash(cd:*)"
+      "Bash(cd:*)",
+      "Bash(source:*)"
     ]
   }
 }

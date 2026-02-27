@@ -77,14 +77,14 @@ FLAMEGPU_AGENT_FUNCTION(tcell_scan_neighbors, flamegpu::MessageSpatial3D, flameg
 
             // Find direction index
             int dir_idx = -1;
-            // for (int i = 0; i < 26; i++) {
-            //     int ddx, ddy, ddz;
-            //     get_moore_direction(i, ddx, ddy, ddz);
-            //     if (ddx == dx && ddy == dy && ddz == dz) {
-            //         dir_idx = i;
-            //         break;
-            //     }
-            // }
+            for (int i = 0; i < 26; i++) {
+                int ddx, ddy, ddz;
+                get_moore_direction(i, ddx, ddy, ddz);
+                if (ddx == dx && ddy == dy && ddz == dz) {
+                    dir_idx = i;
+                    break;
+                }
+            }
 
             if (dir_idx >= 0) {
                 if (agent_type == CELL_TYPE_CANCER) {
@@ -214,7 +214,7 @@ FLAMEGPU_AGENT_FUNCTION(tcell_state_step, flamegpu::MessageNone, flamegpu::Messa
                 exhausted = true;
             }
         }
-        else if (neighbor_all > 0){
+        if (neighbor_all > 0){
             float bond = get_PD1_PDL1(max_PDL1, nivo,
                         FLAMEGPU->environment.getProperty<float>("PARAM_PD1_SYN"),
                         FLAMEGPU->environment.getProperty<float>("PARAM_PDL1_K1"),
@@ -336,8 +336,10 @@ FLAMEGPU_AGENT_FUNCTION(tcell_divide, flamegpu::MessageNone, flamegpu::MessageNo
         }
 
         // Won a slot — create daughter
-        const float rnd = FLAMEGPU->random.uniform<float>();
-        const int daughter_life = static_cast<int>(tcell_life_mean * logf(1.0f / (rnd + 0.0001f)) + 0.5f);
+        const float tcell_life_sd = FLAMEGPU->environment.getProperty<float>("PARAM_TCELL_LIFESPAN_SD_SLICE");
+        float tLifeD = tcell_life_mean + FLAMEGPU->random.normal<float>() * tcell_life_sd;
+        int daughter_life = static_cast<int>(tLifeD + 0.5f);
+        daughter_life = (daughter_life > 0) ? daughter_life : 1;
 
         FLAMEGPU->agent_out.setVariable<int>("x", cand_x[i]);
         FLAMEGPU->agent_out.setVariable<int>("y", cand_y[i]);
@@ -353,6 +355,9 @@ FLAMEGPU_AGENT_FUNCTION(tcell_divide, flamegpu::MessageNone, flamegpu::MessageNo
         // Update parent
         FLAMEGPU->setVariable<int>("divide_limit", divide_limit - 1);
         FLAMEGPU->setVariable<int>("divide_cd", div_interval);
+
+        // Track T cell proliferation event
+        atomicAdd(&reinterpret_cast<unsigned int*>(FLAMEGPU->environment.getProperty<uint64_t>("event_tcell_prolif_ptr"))[0], 1u);
 
         break;  // Division done
     }

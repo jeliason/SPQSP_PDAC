@@ -644,6 +644,9 @@ void defineEnvironment(flamegpu::ModelDescription& model,
     // Drug properties
     env.newProperty<float>("R_cabo", 0.0f); // Resistance to Cabo
 
+    // Vasculature count (updated each step by update_vasculature_count host function)
+    env.newProperty<int>("n_vasculature_total", 1);
+
     // Occupancy grid: stores per-voxel cell counts indexed by AgentType enum value.
     // Dimensions are compile-time constants; only [0..grid_size-1] are used at runtime.
     env.newMacroProperty<unsigned int,
@@ -663,6 +666,19 @@ void defineEnvironment(flamegpu::ModelDescription& model,
     // Indices defined in ABMEventCounterIndex enum (common.cuh).
     // Values: cancer deaths (by cause), immune cell recruitment counts.
     env.newMacroProperty<int, ABM_EVENT_COUNTER_SIZE>("abm_event_counters");
+
+    // Event tracking for comparison with HCC (cumulative counts per step)
+    env.newProperty<unsigned int>("event_tcell_prolif", 0u);  // T cell (CD8 cytotoxic) proliferation
+    env.newProperty<unsigned int>("event_tcell_recruit", 0u); // T cell (CD8) recruitment
+    env.newProperty<unsigned int>("event_th_prolif", 0u);     // T helper (TH) proliferation
+    env.newProperty<unsigned int>("event_treg_prolif", 0u);   // T regulatory (TReg) proliferation
+
+    // GPU pointers for event counter arrays (set by main.cu after CUDA init)
+    env.newProperty<uint64_t>("event_tcell_prolif_ptr", 0u);  // Pointer to GPU counter
+    env.newProperty<uint64_t>("event_tcell_recruit_ptr", 0u); // Pointer to GPU counter
+    env.newProperty<uint64_t>("event_th_prolif_ptr", 0u);     // Pointer to GPU counter
+    env.newProperty<uint64_t>("event_th_recruit_ptr", 0u);    // Pointer to GPU counter
+    env.newProperty<uint64_t>("event_treg_prolif_ptr", 0u);   // Pointer to GPU counter
 
     // Populate ALL other parameters from XML
     params.populateFlameGPUEnvironment(env);

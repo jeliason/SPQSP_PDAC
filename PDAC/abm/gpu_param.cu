@@ -50,6 +50,7 @@ const char* _gpu_param_description[][3] = {
     {"Param.ABM.TCell.IFNg_recruit_Half", "", "pos"}, 
     //*************************************************************************/
     // TCD4 cell parameters
+    {"Param.ABM.TCD4.lifespanSD", "", "pos"},  // PARAM_TCD4_LIFESPAN_SD
     {"Param.ABM.TCD4.TGFB_release_time", "", "pos"},  // PARAM_TCD4_TGFB_RELEASE_TIME
     //*************************************************************************/
     // MDSC cell parameters
@@ -285,6 +286,7 @@ void GPUParam::populateFlameGPUEnvironment(flamegpu::EnvironmentDescription& env
     //TCD4 CELL PARAMETERS
     env.newProperty<int>("PARAM_TCD4_DIV_INTERNAL", getInt(PARAM_TCD4_DIV_INTERNAL));
     env.newProperty<int>("PARAM_TCD4_DIV_LIMIT", getInt(PARAM_TCD4_DIV_LIMIT));
+    env.newProperty<float>("PARAM_TCD4_LIFESPAN_SD", getFloat(PARAM_TCD4_LIFESPAN_SD));
     env.newProperty<float>("PARAM_TCD4_TGFB_RELEASE_TIME", getFloat(PARAM_TCD4_TGFB_RELEASE_TIME));
     //MDSC CELL PARAMETERS
     env.newProperty<float>("PARAM_MDSC_LIFESPAN_SD", getFloat(PARAM_MDSC_LIFESPAN_SD));

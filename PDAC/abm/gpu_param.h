@@ -53,6 +53,7 @@ enum GPUParamFloat {
     PARAM_TEFF_IFN_EC50,
     //*************************************************************************/
     // TCD4 cell parameters
+    PARAM_TCD4_LIFESPAN_SD,
     PARAM_TCD4_TGFB_RELEASE_TIME,
     //*************************************************************************/
     // MDSC cell parameters

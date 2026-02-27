@@ -70,31 +70,37 @@ FLAMEGPU_AGENT_FUNCTION(vascular_compute_chemical_sources, flamegpu::MessageNone
 
     // === O2 SECRETION via Krogh cylinder model (PHALANX ONLY) ===
     // Formula identical to HCC Tumor.cpp lines 326-336 (Sharan et al.)
-    // HCC applies this as a per-step BioFVM source with small substeps.
-    // Here we split Kv*Lv*(C_blood - C_local) = Kv*Lv*C_blood - Kv*Lv*C_local
-    // and put Kv*Lv into the uptake array (implicit in backward Euler) to avoid
-    // oscillation at large dt=21600s.
+    // HCC uses: O2_transport = max(0, Kv*Lv*(C_blood - C_local))  — vessels only source.
+    // We match this by applying the implicit split (stable at large dt) only when
+    // C_local < C_blood.  When C_local >= C_blood the block is skipped entirely,
+    // so vessels never act as O2 sinks — identical clamping behaviour to HCC.
     if (cell_state == VAS_PHALANX) {
         const float pi = 3.1415926f;
         const float sigma = FLAMEGPU->environment.getProperty<float>("PARAM_VAS_SIGMA");
         const float RC    = FLAMEGPU->environment.getProperty<float>("PARAM_VAS_RC");
         const float C_blood = FLAMEGPU->environment.getProperty<float>("PARAM_VAS_O2_CONC");
 
-        // Identical to HCC Tumor.cpp
-        float Lv     = voxel_volume / (RC * RC * pi);           // [cm]  (vessel length)
-        float Rt     = 1.0f / std::sqrt(Lv * pi);              // [cm^-0.5] (Krogh cylinder radius)
-        float w      = RC / Rt;
-        float lambda = 1.0f - w * w;
-        float Kv = 2.0f * pi * FLAMEGPU->environment.getProperty<float>("PARAM_O2_DIFFUSIVITY")
-                   * (lambda / (sigma * lambda - (2.0f + lambda) / 4.0f
-                                + (1.0f / lambda) * std::log(1.0f / w)));
-        float KvLv = Kv * Lv;  // O2 transport coefficient [cm^3/s]
+        const float C_local = PDE_READ(FLAMEGPU, PDE_CONC_O2, voxel);
 
-        // Split into implicit form for numerical stability at large dt:
-        //   source  += KvLv * C_blood / voxel_volume   [conc/s, constant inflow]
-        //   uptake  += KvLv / voxel_volume              [1/s, handled implicitly by solver]
-        PDE_SECRETE(FLAMEGPU, PDE_SRC_O2, voxel, KvLv * C_blood / voxel_volume);
-        PDE_UPTAKE(FLAMEGPU,  PDE_UPT_O2, voxel, KvLv / voxel_volume);
+        if (C_local < C_blood) {
+            // Identical to HCC Tumor.cpp
+            float Lv     = voxel_volume / (RC * RC * pi);           // [cm]  (vessel length)
+            float Rt     = 1.0f / std::sqrt(Lv * pi);              // [cm^-0.5] (Krogh cylinder radius)
+            float w      = RC / Rt;
+            float lambda = 1.0f - w * w;
+            float Kv = 2.0f * pi * FLAMEGPU->environment.getProperty<float>("PARAM_O2_DIFFUSIVITY")
+                       * (lambda / (sigma * lambda - (2.0f + lambda) / 4.0f
+                                    + (1.0f / lambda) * std::log(1.0f / w)));
+            float KvLv = Kv * Lv;  // O2 transport coefficient [cm^3/s]
+
+            // Implicit split: stable at large dt, drives C_local toward C_blood from below.
+            // C_new cannot overshoot C_blood because the fixed point of the implicit scheme
+            // is exactly C_blood, and backward Euler converges monotonically.
+            //   source  += KvLv * C_blood / voxel_volume   [conc/s, constant inflow]
+            //   uptake  += KvLv / voxel_volume              [1/s, handled implicitly by solver]
+            PDE_SECRETE(FLAMEGPU, PDE_SRC_O2, voxel, KvLv * C_blood / voxel_volume);
+            PDE_UPTAKE(FLAMEGPU,  PDE_UPT_O2, voxel, KvLv / voxel_volume);
+        }
     }
 
     // === VEGF-A UPTAKE (ALL STATES) ===
@@ -123,12 +129,30 @@ FLAMEGPU_AGENT_FUNCTION(vascular_mark_t_sources, flamegpu::MessageNone, flamegpu
     const float local_IFNg = reinterpret_cast<const float*>(
         FLAMEGPU->environment.getProperty<uint64_t>(PDE_CONC_IFN))[voxel_ts];
 
+    // Check radius-3 sphere: skip marking if completely filled with cancer
+    const unsigned int* cancer_occ = reinterpret_cast<const unsigned int*>(
+        FLAMEGPU->environment.getProperty<uint64_t>("cancer_occ_ptr"));
+    int sphere_total = 0, sphere_cancer = 0;
+    for (int dz = -3; dz <= 3; dz++) {
+        for (int dy = -3; dy <= 3; dy++) {
+            for (int dx = -3; dx <= 3; dx++) {
+                if (dx*dx + dy*dy + dz*dz > 9) continue;
+                int cx = x + dx, cy = y + dy, cz = z + dz;
+                if (cx < 0 || cx >= grid_x || cy < 0 || cy >= grid_y || cz < 0 || cz >= grid_z) continue;
+                sphere_total++;
+                sphere_cancer += (cancer_occ[cz*(grid_x*grid_y) + cy*grid_x + cx] > 0u) ? 1 : 0;
+            }
+        }
+    }
+    if (sphere_total > 0 && sphere_cancer >= sphere_total) return flamegpu::ALIVE;
+
     const float ec50_ifng = FLAMEGPU->environment.getProperty<float>("PARAM_TEFF_IFN_EC50");
     const float H_IFNg = local_IFNg / (local_IFNg + ec50_ifng);
 
     double max_cancer = grid_x * grid_y * grid_z;
     double tumor_scaler = std::sqrt(1e5 * max_cancer / (FLAMEGPU->environment.getProperty<float>("qsp_cc_tumor") * FLAMEGPU->environment.getProperty<float>("AVOGADROS")));
-    double vas_scaler = 100.0 / 200.0;
+    const int n_vas = FLAMEGPU->environment.getProperty<int>("n_vasculature_total");
+    double vas_scaler = 100.0 / static_cast<double>(n_vas);
     const float p_entry = H_IFNg * tumor_scaler * vas_scaler;
 
     if (FLAMEGPU->random.uniform<float>() < p_entry) {
@@ -154,6 +178,8 @@ FLAMEGPU_AGENT_FUNCTION(vascular_state_step, flamegpu::MessageSpatial3D, flamegp
 
     // VAS_TIP: simple division if voxel is not too crowded
     // Tip cells do not appear to care about crowding, just going to let them divide
+    // The division only happens if the current location has no other cells though since it leaves behind a phalanx
+    // This theoretically is accounted for during the divide.
     if (cell_state == VAS_TIP) {
         // int vascular_neighbor_count = 0;
         // for (const auto& msg : FLAMEGPU->message_in(

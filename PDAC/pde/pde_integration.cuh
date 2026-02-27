@@ -47,6 +47,9 @@ extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER recruit_macrophages;
 // Reset recruitment sources (call at start of each step)
 extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER reset_recruitment_sources;
 
+// Update vasculature count env property (call before vascular source marking)
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER update_vasculature_count;
+
 // Occupancy grid: zero before agents write their positions each step
 extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER zero_occupancy_grid;
 

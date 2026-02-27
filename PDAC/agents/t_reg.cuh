@@ -71,14 +71,14 @@ FLAMEGPU_AGENT_FUNCTION(treg_scan_neighbors, flamegpu::MessageSpatial3D, flamegp
 
             // Find direction index
             int dir_idx = -1;
-            // for (int i = 0; i < 26; i++) {
-            //     int ddx, ddy, ddz;
-            //     get_moore_direction(i, ddx, ddy, ddz);
-            //     if (ddx == dx && ddy == dy && ddz == dz) {
-            //         dir_idx = i;
-            //         break;
-            //     }
-            // }
+            for (int i = 0; i < 26; i++) {
+                int ddx, ddy, ddz;
+                get_moore_direction(i, ddx, ddy, ddz);
+                if (ddx == dx && ddy == dy && ddz == dz) {
+                    dir_idx = i;
+                    break;
+                }
+            }
 
             if (dir_idx >= 0) {
                 if (agent_type == CELL_TYPE_T) {
@@ -226,6 +226,13 @@ FLAMEGPU_AGENT_FUNCTION(treg_state_step, flamegpu::MessageNone, flamegpu::Messag
             FLAMEGPU->setVariable<float>("CTLA4", CTLA4);
             return flamegpu::ALIVE;
         }
+        // TH cells can divide when cooldown is ready
+        int divide_limit = FLAMEGPU->getVariable<int>("divide_limit");
+        if (divide_limit > 0 && divide_cd <= 0) {
+            divide_flag = 1;
+        } else {
+            divide_flag = 0;
+        }
 
     } else if (cell_state == TCD4_TREG) {
         if (found_progenitor == 1 && TGFB_release_remain >= 0){
@@ -343,8 +350,10 @@ FLAMEGPU_AGENT_FUNCTION(treg_divide, flamegpu::MessageNone, flamegpu::MessageNon
             continue;
         }
 
-        const float rnd = FLAMEGPU->random.uniform<float>();
-        const int daughter_life = static_cast<int>(treg_life_mean * logf(1.0f / (rnd + 0.0001f)) + 0.5f);
+        const float treg_life_sd = FLAMEGPU->environment.getProperty<float>("PARAM_TCD4_LIFESPAN_SD");
+        float tLifeD = treg_life_mean + FLAMEGPU->random.normal<float>() * treg_life_sd;
+        int daughter_life = static_cast<int>(tLifeD + 0.5f);
+        daughter_life = (daughter_life > 0) ? daughter_life : 1;
 
         FLAMEGPU->agent_out.setVariable<int>("x", cand_x[i]);
         FLAMEGPU->agent_out.setVariable<int>("y", cand_y[i]);
@@ -355,10 +364,18 @@ FLAMEGPU_AGENT_FUNCTION(treg_divide, flamegpu::MessageNone, flamegpu::MessageNon
         FLAMEGPU->agent_out.setVariable<int>("divide_limit", divide_limit - 1);
         FLAMEGPU->agent_out.setVariable<int>("life", daughter_life > 0 ? daughter_life : 1);
 
-        // Update parent
+        // Update parent: division state only (life continues counting down)
         FLAMEGPU->setVariable<int>("divide_flag", 1);
         FLAMEGPU->setVariable<int>("divide_limit", divide_limit - 1);
         FLAMEGPU->setVariable<int>("divide_cd", div_interval);
+
+        // Track TH or TReg proliferation event
+        if (cell_state == TCD4_TH) {
+            atomicAdd(&reinterpret_cast<unsigned int*>(FLAMEGPU->environment.getProperty<uint64_t>("event_th_prolif_ptr"))[0], 1u);
+        } else {
+            // cell_state == TCD4_TREG
+            atomicAdd(&reinterpret_cast<unsigned int*>(FLAMEGPU->environment.getProperty<uint64_t>("event_treg_prolif_ptr"))[0], 1u);
+        }
 
         break;
     }

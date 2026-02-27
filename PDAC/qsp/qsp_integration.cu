@@ -1,5 +1,13 @@
 #include "flamegpu/flamegpu.h"
 #include "../qsp/LymphCentral_wrapper.h"
+#include "../qsp/ode/ODE_system.h"
+
+#include <fstream>
+#include <filesystem>
+
+// File stream for QSP CSV output — file-scope (not in PDAC namespace) so the
+// exportQSPData step function (also at file scope) can access it directly.
+static std::ofstream g_qsp_csv;
 
 namespace PDAC{
 
@@ -13,6 +21,11 @@ void set_lymph_pointer(LymphCentralWrapper* lymph) {
 // Accessible from main.cu FLAMEGPU step functions via extern declaration
 bool is_presim_mode_active() {
     return g_lymph ? g_lymph->is_presimulation_mode() : false;
+}
+
+// Getter used by exportQSPData (which is outside this namespace)
+LymphCentralWrapper* get_lymph_pointer() {
+    return g_lymph;
 }
 
 FLAMEGPU_HOST_FUNCTION(solve_qsp_step) {
@@ -109,4 +122,28 @@ FLAMEGPU_HOST_FUNCTION(solve_qsp_step) {
     FLAMEGPU->environment.setProperty<float>("R_cabo", cabo/ (cabo + FLAMEGPU->environment.getProperty<float>("PARAM_IC50_AXL")));
 
     }
+}
+
+// QSP CSV export step function — defined at file scope (not inside PDAC namespace)
+// so it matches the linkage of exportPDEData/exportABMData/stepCounter in main.cu.
+// g_lymph and g_qsp_csv are static in PDAC namespace in the same TU, so accessible here.
+FLAMEGPU_STEP_FUNCTION(exportQSPData) {
+    PDAC::LymphCentralWrapper* lymph = PDAC::get_lymph_pointer();
+    if (!lymph) return;
+    if (lymph->is_presimulation_mode()) return;
+
+    CancerVCT::ODE_system* ode = lymph->get_ode_system();
+    if (!ode) return;
+
+    const unsigned int main_step = FLAMEGPU->environment.getProperty<unsigned int>("main_sim_step");
+
+    // Open file and write header on first (main-sim) call
+    if (!g_qsp_csv.is_open()) {
+        std::filesystem::create_directories("outputs");
+        g_qsp_csv.open("outputs/qsp.csv");
+        g_qsp_csv << "step" << CancerVCT::ODE_system::getHeader() << "\n";
+    }
+
+    // Write step index followed by all ODE species (CVODEBase::operator<<)
+    g_qsp_csv << main_step << *ode << "\n";
 }

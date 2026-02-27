@@ -21,6 +21,11 @@ namespace PDAC {
 // ============================================================================
 PDESolver* g_pde_solver = nullptr;
 
+// Flat device array: cancer occupancy per voxel (0 = empty, >0 = cancer present).
+// Populated by cancer_write_to_occ_grid, zeroed by zero_occupancy_grid.
+// Used by recruitment source-marking kernels to skip tumor-dense voxels.
+static unsigned int* d_cancer_occ = nullptr;
+
 // ============================================================================
 // Host Function: Reset PDE Buffers (call before compute_chemical_sources)
 // ============================================================================
@@ -104,10 +109,15 @@ void initialize_pde_solver(int grid_x, int grid_y, int grid_z,
     
     g_pde_solver = new PDESolver(config);
     g_pde_solver->initialize();
-    
+
     // Set initial O2 concentration, all others start at 0.0
     g_pde_solver->set_initial_concentration(CHEM_O2, 0.673);  // Oxygen starts at 0.673 (amount/mL)
-    
+
+    // Allocate flat cancer occupancy array for recruitment density checks
+    int total_voxels = g_pde_solver->get_total_voxels();
+    CUDA_CHECK(cudaMalloc(&d_cancer_occ, total_voxels * sizeof(unsigned int)));
+    CUDA_CHECK(cudaMemset(d_cancer_occ, 0, total_voxels * sizeof(unsigned int)));
+
     std::cout << "PDE Solver initialized and coupled to FLAME GPU 2" << std::endl;
 }
 
@@ -154,6 +164,10 @@ void set_pde_pointers_in_environment(flamegpu::ModelDescription& model) {
     uintptr_t recruit_ptr = reinterpret_cast<uintptr_t>(g_pde_solver->get_device_recruitment_sources_ptr());
     model.Environment().newProperty<unsigned long long>("pde_recruitment_sources_ptr", static_cast<unsigned long long>(recruit_ptr));
 
+    // Store flat cancer occupancy pointer (for recruitment density checks)
+    model.Environment().newProperty<unsigned long long>("cancer_occ_ptr",
+        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(d_cancer_occ)));
+
     std::cout << "PDE device pointers stored in FLAME GPU environment" << std::endl;
 }
 
@@ -162,16 +176,43 @@ void cleanup_pde_solver() {
         delete g_pde_solver;
         g_pde_solver = nullptr;
     }
+    if (d_cancer_occ) {
+        cudaFree(d_cancer_occ);
+        d_cancer_occ = nullptr;
+    }
 }
 
 // ============================================================================
 // Recruitment System Implementation
 // ============================================================================
 
+// Helper: check if radius-3 sphere around (x,y,z) is completely filled with cancer.
+// Returns true if every in-bounds voxel within radius 3 has cancer present.
+__device__ bool is_tumor_dense_r3(
+    const unsigned int* d_cancer_occ,
+    int x, int y, int z,
+    int nx, int ny, int nz)
+{
+    int sphere_total = 0, sphere_cancer = 0;
+    for (int dz = -3; dz <= 3; dz++) {
+        for (int dy = -3; dy <= 3; dy++) {
+            for (int dx = -3; dx <= 3; dx++) {
+                if (dx*dx + dy*dy + dz*dz > 9) continue;
+                int cx = x + dx, cy = y + dy, cz = z + dz;
+                if (cx < 0 || cx >= nx || cy < 0 || cy >= ny || cz < 0 || cz >= nz) continue;
+                sphere_total++;
+                sphere_cancer += (d_cancer_occ[cz*(nx*ny) + cy*nx + cx] > 0u) ? 1 : 0;
+            }
+        }
+    }
+    return (sphere_total > 0 && sphere_cancer >= sphere_total);
+}
+
 // CUDA kernel to mark MDSC recruitment sources based on CCL2
 __global__ void mark_mdsc_sources_kernel(
     int* d_recruitment_sources,
     const float* d_ccl2,
+    const unsigned int* d_cancer_occ,
     int nx, int ny, int nz,
     float ec50_ccl2,
     unsigned int seed)
@@ -181,6 +222,9 @@ __global__ void mark_mdsc_sources_kernel(
     int z = blockIdx.z * blockDim.z + threadIdx.z;
 
     if (x >= nx || y >= ny || z >= nz) return;
+
+    // Skip voxels where radius-3 sphere is completely filled with cancer
+    if (is_tumor_dense_r3(d_cancer_occ, x, y, z, nx, ny, nz)) return;
 
     int idx = z * (nx * ny) + y * nx + x;
 
@@ -201,6 +245,7 @@ __global__ void mark_mdsc_sources_kernel(
 __global__ void mark_mac_sources_kernel(
     int* d_recruitment_sources,
     const float* d_ccl2,
+    const unsigned int* d_cancer_occ,
     int nx, int ny, int nz,
     float ec50_ccl2,
     unsigned int seed)
@@ -210,6 +255,9 @@ __global__ void mark_mac_sources_kernel(
     int z = blockIdx.z * blockDim.z + threadIdx.z;
 
     if (x >= nx || y >= ny || z >= nz) return;
+
+    // Skip voxels where radius-3 sphere is completely filled with cancer
+    if (is_tumor_dense_r3(d_cancer_occ, x, y, z, nx, ny, nz)) return;
 
     int idx = z * (nx * ny) + y * nx + x;
 
@@ -224,6 +272,12 @@ __global__ void mark_mac_sources_kernel(
     if (rand_val < H_CCL2) {
         atomicOr(&d_recruitment_sources[idx], 4);  // Set macrophage bit (bit 2)
     }
+}
+
+// Update vasculature count env property (used by vascular_mark_t_sources device function)
+FLAMEGPU_HOST_FUNCTION(update_vasculature_count) {
+    int n_vas = static_cast<int>(FLAMEGPU->agent(AGENT_VASCULAR).count());
+    FLAMEGPU->environment.setProperty<int>("n_vasculature_total", std::max(1, n_vas));
 }
 
 // Reset recruitment sources at start of each step
@@ -253,7 +307,7 @@ FLAMEGPU_HOST_FUNCTION(mark_mdsc_sources) {
     dim3 grid((nx + 7) / 8, (ny + 7) / 8, (nz + 7) / 8);
 
     mark_mdsc_sources_kernel<<<grid, block>>>(
-        d_recruitment_sources, d_ccl2, nx, ny, nz, ec50_ccl2, seed);
+        d_recruitment_sources, d_ccl2, d_cancer_occ, nx, ny, nz, ec50_ccl2, seed);
 
     cudaDeviceSynchronize();
 }
@@ -448,6 +502,24 @@ FLAMEGPU_HOST_FUNCTION(recruit_t_cells) {
     counters[ABM_COUNT_TEFF_REC] += teff_recruited;
     counters[ABM_COUNT_TH_REC] += th_recruited;
     counters[ABM_COUNT_TREG_REC] += treg_recruited;
+
+    // Track events: T cell recruitment (CD8 effector) and TREG recruitment
+    uint64_t tcell_recruit_ptr = FLAMEGPU->environment.getProperty<uint64_t>("event_tcell_recruit_ptr");
+    if (tcell_recruit_ptr != 0 && teff_recruited > 0) {
+        unsigned int host_val;
+        cudaMemcpy(&host_val, reinterpret_cast<unsigned int*>(tcell_recruit_ptr), sizeof(unsigned int), cudaMemcpyDeviceToHost);
+        host_val += teff_recruited;
+        cudaMemcpy(reinterpret_cast<unsigned int*>(tcell_recruit_ptr), &host_val, sizeof(unsigned int), cudaMemcpyHostToDevice);
+    }
+
+    // Track TREG recruitment (TREGs are recruited as TH cells, so count as TH recruitment)
+    uint64_t th_recruit_ptr = FLAMEGPU->environment.getProperty<uint64_t>("event_th_recruit_ptr");
+    if (th_recruit_ptr != 0 && treg_recruited > 0) {
+        unsigned int host_val;
+        cudaMemcpy(&host_val, reinterpret_cast<unsigned int*>(th_recruit_ptr), sizeof(unsigned int), cudaMemcpyDeviceToHost);
+        host_val += treg_recruited;
+        cudaMemcpy(reinterpret_cast<unsigned int*>(th_recruit_ptr), &host_val, sizeof(unsigned int), cudaMemcpyHostToDevice);
+    }
 }
 
 // Recruit MDSCs at marked MDSC source voxels
@@ -541,7 +613,7 @@ FLAMEGPU_HOST_FUNCTION(mark_mac_sources) {
     dim3 grid((nx + 7) / 8, (ny + 7) / 8, (nz + 7) / 8);
 
     mark_mac_sources_kernel<<<grid, block>>>(
-        d_recruitment_sources, d_ccl2, nx, ny, nz, ec50_ccl2, seed);
+        d_recruitment_sources, d_ccl2, d_cancer_occ, nx, ny, nz, ec50_ccl2, seed);
 
     cudaDeviceSynchronize();
 }
@@ -633,6 +705,12 @@ FLAMEGPU_HOST_FUNCTION(zero_occupancy_grid) {
     auto occ = FLAMEGPU->environment.getMacroProperty<unsigned int,
         OCC_GRID_MAX, OCC_GRID_MAX, OCC_GRID_MAX, NUM_OCC_TYPES>("occ_grid");
     occ.zero();
+
+    // Also reset the flat cancer occupancy array used by recruitment kernels
+    if (d_cancer_occ && g_pde_solver) {
+        int total_voxels = g_pde_solver->get_total_voxels();
+        cudaMemset(d_cancer_occ, 0, total_voxels * sizeof(unsigned int));
+    }
 }
 
 // ============================================================================
@@ -657,6 +735,7 @@ FLAMEGPU_HOST_FUNCTION(update_ecm_grid) {
     const int grid_y = FLAMEGPU->environment.getProperty<int>("grid_size_y");
     const int grid_z = FLAMEGPU->environment.getProperty<int>("grid_size_z");
 
+    float voxel_size_cm = FLAMEGPU->environment.getProperty<float>("PARAM_VOXEL_SIZE_CM");
     // ECM parameters
     float decay_rate = FLAMEGPU->environment.getProperty<float>("PARAM_FIB_ECM_DECAY_RATE");
     float ecm_baseline = FLAMEGPU->environment.getProperty<float>("PARAM_FIB_ECM_BASELINE");
@@ -672,16 +751,17 @@ FLAMEGPU_HOST_FUNCTION(update_ecm_grid) {
         for (int j = 0; j < grid_y; j++) {
             for (int k = 0; k < grid_z; k++) {
                 float curr_ecm = ecm[i][j][k];
+                float curr_ecm_amt = curr_ecm * std::pow(voxel_size_cm, 3);
 
                 // Exponential decay: ECM_n = ECM_{n-1} * exp(-decay_rate * dt)
-                float decayed = curr_ecm * expf(-decay_rate * dt);
+                float decayed = curr_ecm_amt * expf(-decay_rate * dt);
 
                 // Deposition from Gaussian density field
                 float fib_field_val = field[i][j][k];
                 float saturation = fminf(curr_ecm / ecm_saturation, 1.0f);
                 float deposition = fib_field_val * release_rate / 3.0f * (1.0f - saturation);
 
-                float new_ecm = decayed + deposition;
+                float new_ecm = (decayed + deposition) / std::pow(voxel_size_cm, 3);
 
                 // Enforce bounds [baseline, saturation]
                 if (new_ecm < ecm_baseline) new_ecm = ecm_baseline;

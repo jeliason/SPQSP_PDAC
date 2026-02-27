@@ -479,13 +479,13 @@ void LymphCentralWrapper::_apply_abm_feedback() {
     ode->setSpeciesVar(SP_V_T_P1, _abm_signals.cancer_deaths_last_step * scaler * factor_p1, false);
 
     // Recruitment decrease
-    double cent_t_eff = ode->getSpeciesVar(SP_V_T_T1, false);
-    double cent_t_reg = ode->getSpeciesVar(SP_V_T_T0, false);
-    double cent_t_h = ode->getSpeciesVar(SP_V_T_Th, false);
+    double cent_t_eff = ode->getSpeciesVar(SP_V_C_T1, false);
+    double cent_t_reg = ode->getSpeciesVar(SP_V_C_T0, false);
+    double cent_t_h = ode->getSpeciesVar(SP_V_C_Th, false);
 
-    ode->setSpeciesVar(SP_V_T_T1, std::max(0.0, cent_t_eff - _abm_signals.teff_recruited_last_step * scaler), false);
-    ode->setSpeciesVar(SP_V_T_T0, std::max(0.0, cent_t_reg - _abm_signals.treg_recruited_last_step * scaler), false);
-    ode->setSpeciesVar(SP_V_T_Th, std::max(0.0, cent_t_h - _abm_signals.th_recruited_last_step * scaler), false);
+    ode->setSpeciesVar(SP_V_C_T1, std::max(0.0, cent_t_eff - _abm_signals.teff_recruited_last_step * scaler), false);
+    ode->setSpeciesVar(SP_V_C_T0, std::max(0.0, cent_t_reg - _abm_signals.treg_recruited_last_step * scaler), false);
+    ode->setSpeciesVar(SP_V_C_Th, std::max(0.0, cent_t_h - _abm_signals.th_recruited_last_step * scaler), false);
 }
 
 } // namespace PDAC

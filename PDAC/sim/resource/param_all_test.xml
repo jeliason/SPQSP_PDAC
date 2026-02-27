@@ -45,6 +45,7 @@
       <IFNg_recruit_Half>0.0725</IFNg_recruit_Half>
     </TCell>
     <TCD4>
+      <lifespanSD>10</lifespanSD>
       <div_interval>10</div_interval>
       <TGFB_release_time>43200</TGFB_release_time>
       <div_limit>4</div_limit>
@@ -196,7 +197,7 @@
     <t_steadystate>5000</t_steadystate>  
     <use_resection>0</use_resection>    
     <t_resection>1000</t_resection>
-    <presimulation_diam_frac>0.95</presimulation_diam_frac>
+    <presimulation_diam_frac>1.00</presimulation_diam_frac>
     <start>0</start>
     <step>1</step>
     <n_step>360</n_step>

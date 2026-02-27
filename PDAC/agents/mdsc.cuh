@@ -69,14 +69,14 @@ FLAMEGPU_AGENT_FUNCTION(mdsc_scan_neighbors, flamegpu::MessageSpatial3D, flamegp
 
             // Find direction index
             int dir_idx = -1;
-            // for (int i = 0; i < 26; i++) {
-            //     int ddx, ddy, ddz;
-            //     get_moore_direction(i, ddx, ddy, ddz);
-            //     if (ddx == dx && ddy == dy && ddz == dz) {
-            //         dir_idx = i;
-            //         break;
-            //     }
-            // }
+            for (int i = 0; i < 26; i++) {
+                int ddx, ddy, ddz;
+                get_moore_direction(i, ddx, ddy, ddz);
+                if (ddx == dx && ddy == dy && ddz == dz) {
+                    dir_idx = i;
+                    break;
+                }
+            }
 
             if (dir_idx >= 0) {
                 if (agent_type == CELL_TYPE_CANCER) {

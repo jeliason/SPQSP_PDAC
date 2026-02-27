@@ -16,6 +16,7 @@ extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER fib_execute_divide;
 extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER aggregate_abm_events;
 extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER copy_abm_counters_to_environment;
 extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER reset_abm_event_counters;
+extern flamegpu::FLAMEGPU_HOST_FUNCTION_POINTER output_events;
 
 void defineMainModelLayers(flamegpu::ModelDescription& model) {
     // 0. Update agent counts for QSP
@@ -33,7 +34,12 @@ void defineMainModelLayers(flamegpu::ModelDescription& model) {
         flamegpu::LayerDescription layer = model.newLayer("reset_recruitment_sources");
         layer.addHostFunction(reset_recruitment_sources);
     }
-    // 0d. Mark vascular T cell sources (phalanx cells based on IFN-γ)
+    // 0d. Update vasculature count (used by mark_t_sources as denominator)
+    {
+        flamegpu::LayerDescription layer = model.newLayer("update_vasculature_count");
+        layer.addHostFunction(update_vasculature_count);
+    }
+    // 0e. Mark vascular T cell sources (phalanx cells based on IFN-γ)
     {
        flamegpu::LayerDescription layer = model.newLayer("mark_vascular_t_sources");
        layer.addAgentFunction(AGENT_VASCULAR, "mark_t_sources");
