@@ -443,16 +443,13 @@ FLAMEGPU_AGENT_FUNCTION(tcell_move, flamegpu::MessageNone, flamegpu::MessageNone
     const int grid_y = FLAMEGPU->environment.getProperty<int>("grid_size_y");
     const int grid_z = FLAMEGPU->environment.getProperty<int>("grid_size_z");
 
-    // ECM based movement probability
-    // TEMPORARILY DISABLED for debugging
-    // auto ecm = FLAMEGPU->environment.getMacroProperty<float,
-    //     OCC_GRID_MAX, OCC_GRID_MAX, OCC_GRID_MAX>("ecm_grid");
-    // float ECM_density = ecm[x][y][z];
-    // double ECM_sat = ECM_density / (ECM_density + FLAMEGPU->environment.getProperty<float>("PARAM_FIB_ECM_MOT_EC50"));
-    // if (FLAMEGPU->random.uniform<float>() < ECM_sat) return flamegpu::ALIVE;
-
-    // Use fixed ECM saturation temporarily
-    if (FLAMEGPU->random.uniform<float>() < 0.2f) return flamegpu::ALIVE;
+    // ECM based movement probability: higher ECM → more likely to be blocked
+    auto ecm = FLAMEGPU->environment.getMacroProperty<float,
+        OCC_GRID_MAX, OCC_GRID_MAX, OCC_GRID_MAX>("ecm_grid");
+    float ECM_density = static_cast<float>(ecm[x][y][z]);
+    float ECM_50 = FLAMEGPU->environment.getProperty<float>("PARAM_FIB_ECM_MOT_EC50");
+    float ECM_sat = ECM_density / (ECM_density + ECM_50);
+    if (FLAMEGPU->random.uniform<float>() < ECM_sat) return flamegpu::ALIVE;
 
     const float move_dir_x = FLAMEGPU->getVariable<float>("move_direction_x");
     const float move_dir_y = FLAMEGPU->getVariable<float>("move_direction_y");
