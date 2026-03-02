@@ -1,4 +1,5 @@
 /PDAC/sim/build/
+/python/outputs/
 /python/venv/
 /PDAC/sim/outputs/
 /PDAC/sim/profiling/
