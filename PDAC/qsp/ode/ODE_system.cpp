@@ -519,7 +519,7 @@ void ODE_system::setup_class_parameters(QSPParam& param){
     _class_parameter[P_kon_PDL1_aPDL1] = PFILE(QSP_kon_PDL1_aPDL1) * 0.0010000000000000007;
     //kon_CD28_CD80, mwfac3709c_96be_429f_bca4_d1fc835858f0, index: 154
     //Unit: metre^(2)mole^(-1)second^(-1)
-    _class_parameter[P_kon_CD28_CD80] = PFILE(QSP_kon_CD28_CD80) * 1.92977777777778e-29;
+    _class_parameter[P_kon_CD28_CD80] = PFILE(QSP_kon_CD28_CD80) * 1000000000000.0;
     //kon_CD28_CD86, mw4e8d3473_cdde_4c35_9b76_ce2b0f67b8e3, index: 155
     //Unit: metre^(2)mole^(-1)second^(-1)
     _class_parameter[P_kon_CD28_CD86] = PFILE(QSP_kon_CD28_CD86) * 1000000000000.0;

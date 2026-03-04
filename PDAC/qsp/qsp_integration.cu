@@ -31,6 +31,22 @@ LymphCentralWrapper* get_lymph_pointer() {
     return g_lymph;
 }
 
+// Export step-0 QSP state (initial condition, before any simulation steps).
+// Called from main.cu after presim completes and before the main loop.
+void exportQSPData_step0() {
+    if (!g_lymph) return;
+    CancerVCT::ODE_system* ode = g_lymph->get_ode_system();
+    if (!ode) return;
+
+    if (!g_qsp_csv.is_open()) {
+        std::filesystem::create_directories("outputs");
+        g_qsp_csv.open("outputs/qsp.csv");
+        g_qsp_csv << "step" << CancerVCT::ODE_system::getHeader() << "\n";
+    }
+    g_qsp_csv << 0 << *ode << "\n";
+    g_qsp_csv.flush();
+}
+
 FLAMEGPU_HOST_FUNCTION(solve_qsp_step) {
     nvtxRangePush("QSP Solve");
     if (!g_lymph) { nvtxRangePop(); return; }
@@ -160,5 +176,5 @@ FLAMEGPU_STEP_FUNCTION(exportQSPData) {
     }
 
     // Write step index followed by all ODE species (CVODEBase::operator<<)
-    g_qsp_csv << main_step << *ode << "\n";
+    g_qsp_csv << (main_step + 1) << *ode << "\n";
 }

@@ -652,15 +652,10 @@ void defineEnvironment(flamegpu::ModelDescription& model,
     env.newMacroProperty<unsigned int,
         OCC_GRID_MAX, OCC_GRID_MAX, OCC_GRID_MAX, NUM_OCC_TYPES>("occ_grid");
 
-    // ECM grid: per-voxel extracellular matrix density (float, range [baseline, saturation]).
-    // Deposited by fibroblasts/CAFs; decayed by update_ecm_grid host function each step.
-    env.newMacroProperty<float,
-        OCC_GRID_MAX, OCC_GRID_MAX, OCC_GRID_MAX>("ecm_grid");
-
-    // Fibroblast density field: Gaussian-smoothed fibroblast positions.
-    // Computed each step by fib_build_density_field, used by update_ecm_grid for ECM deposition.
-    env.newMacroProperty<float,
-        OCC_GRID_MAX, OCC_GRID_MAX, OCC_GRID_MAX>("fib_density_field");
+    // ECM grid and fibroblast density field are now plain CUDA device arrays (d_ecm_grid,
+    // d_fib_density_field) allocated in initialize_pde_solver. Their uint64_t pointers
+    // are registered as env properties "ecm_grid_ptr" and "fib_density_field_ptr" by
+    // set_pde_pointers_in_environment. This eliminates MacroProperty D2H/H2D copies.
 
     // ABM event counters: atomic increment by agent functions, reset each step.
     // Indices defined in ABMEventCounterIndex enum (common.cuh).

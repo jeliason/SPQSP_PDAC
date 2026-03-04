@@ -486,7 +486,8 @@ void initializeVascularCellsRandom(
     const int center_x = grid_x / 2;
     const int center_y = grid_y / 2;
     const int center_z = grid_z / 2;
-    const double radius = tumor_radius;
+    // const double radius = tumor_radius;
+    const double radius = 0.5 * grid_x;
 
     // Random number generator
     std::srand(12345);  // Use fixed seed for reproducibility

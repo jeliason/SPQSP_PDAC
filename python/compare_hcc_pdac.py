@@ -13,13 +13,17 @@ HCC cell_N.csv columns: x, y, z, Type, State, extra
   State (FIB):    16=CAF
   State (VAS):    17=TIP, 18=STALK(excluded), 19=PHALANX
 
-PDAC agents_step_NNNNNN.csv columns: agent_type, agent_id, x, y, z, cell_state, additional_info
-  agent_type: CANCER, TCELL, TREG, MDSC, MACROPHAGE, FIBROBLAST, VAS
-  cell_state (cancer): STEM, PROGENITOR, SENESCENT
-  cell_state (T):      EFFECTOR (or numeric 0)
-  cell_state (VAS):    TIP, PHALANX
+PDAC agents_step_NNNNNN.npy: shape (N, 8), dtype int32
+  col 0: type_id  (0=CANCER 1=TCELL 2=TREG 3=MDSC 4=MAC 5=FIB 6=VAS)
+  col 5: cell_state
+    cancer: 0=STEM 1=PROGENITOR 2=SENESCENT
+    tcell:  0=EFFECTOR 1=CYTOTOXIC 2=SUPPRESSED
+    treg:   0=TH 1=REGULATORY
+    mac:    0=M1 1=M2
+    vas:    0=TIP (1=STALK excluded in output) 2=PHALANX
 
-PDAC pde_step_NNNNNN.csv columns: x, y, z, O2, IFN, IL2, IL10, TGFB, CCL2, ARGI, NO, IL12, VEGFA
+PDAC pde_step_NNNNNN.npy: shape (10, nz, ny, nx), dtype float32
+  axis 0 order: O2, IFN, IL2, IL10, TGFB, CCL2, ARGI, NO, IL12, VEGFA
 """
 
 import os
@@ -79,8 +83,14 @@ def parse_hcc_step(step):
     return counts
 
 # ─── Parse PDAC ABM ───────────────────────────────────────────────────────────
+# NPY column indices
+_COL_TYPE  = 0
+_COL_STATE = 5
+# type_id values
+_T_CANCER, _T_TCELL, _T_TREG, _T_MDSC, _T_MAC, _T_FIB, _T_VAS = 0, 1, 2, 3, 4, 5, 6
+
 def parse_pdac_step(step):
-    path = os.path.join(PDAC_ABM_DIR, f"agents_step_{step:06d}.csv")
+    path = os.path.join(PDAC_ABM_DIR, f"agents_step_{step:06d}.npy")
     counts = dict(cancer_stem=0, cancer_prog=0, cancer_sen=0,
                   tcell=0, teff=0, tcyt=0, tsup=0,
                   th=0, treg=0,
@@ -88,34 +98,47 @@ def parse_pdac_step(step):
                   vas_tip=0, vas_phalanx=0)
     if not os.path.exists(path):
         return counts
-    with open(path) as f:
-        reader = csv.reader(f)
-        next(reader)  # header
-        for row in reader:
-            if len(row) < 6:
-                continue
-            atype, state = row[0].strip(), row[5].strip()
-            if atype == 'CANCER':
-                if   state == 'STEM':       counts['cancer_stem'] += 1
-                elif state == 'PROGENITOR': counts['cancer_prog'] += 1
-                elif state == 'SENESCENT':  counts['cancer_sen']  += 1
-            elif atype == 'TCELL':
-                counts['tcell'] += 1
-                if   state == 'EFFECTOR':   counts['teff'] += 1
-                elif state == 'CYTOTOXIC':  counts['tcyt'] += 1
-                elif state == 'SUPPRESSED': counts['tsup'] += 1
-            elif atype == 'TREG':
-                if   state == 'TH':         counts['th']   += 1
-                else:                       counts['treg'] += 1  # REGULATORY or fallback
-            elif atype == 'MDSC':        counts['mdsc']       += 1
-            elif atype == 'MAC':
-                counts['mac']        += 1
-                if   state == 'M1' or state == '0': counts['mac_m1'] += 1
-                elif state == 'M2' or state == '1': counts['mac_m2'] += 1
-            elif atype == 'FIB':         counts['fib']        += 1
-            elif atype == 'VAS':
-                if   state == 'TIP':     counts['vas_tip']     += 1
-                elif state == 'PHALANX': counts['vas_phalanx'] += 1
+    arr = np.load(path)          # shape (N, 8), dtype int32
+    if arr.ndim != 2 or arr.shape[1] < 6 or len(arr) == 0:
+        return counts
+    types  = arr[:, _COL_TYPE]
+    states = arr[:, _COL_STATE]
+
+    # Cancer
+    mask = types == _T_CANCER
+    counts['cancer_stem'] = int(np.sum(mask & (states == 0)))
+    counts['cancer_prog'] = int(np.sum(mask & (states == 1)))
+    counts['cancer_sen']  = int(np.sum(mask & (states == 2)))
+
+    # T cell
+    mask = types == _T_TCELL
+    counts['tcell'] = int(np.sum(mask))
+    counts['teff']  = int(np.sum(mask & (states == 0)))
+    counts['tcyt']  = int(np.sum(mask & (states == 1)))
+    counts['tsup']  = int(np.sum(mask & (states == 2)))
+
+    # TReg  (state 0=TH, 1=REGULATORY)
+    mask = types == _T_TREG
+    counts['th']   = int(np.sum(mask & (states == 0)))
+    counts['treg'] = int(np.sum(mask & (states == 1)))
+
+    # MDSC
+    counts['mdsc'] = int(np.sum(types == _T_MDSC))
+
+    # MAC  (state 0=M1, 1=M2)
+    mask = types == _T_MAC
+    counts['mac']    = int(np.sum(mask))
+    counts['mac_m1'] = int(np.sum(mask & (states == 0)))
+    counts['mac_m2'] = int(np.sum(mask & (states == 1)))
+
+    # Fibroblast
+    counts['fib'] = int(np.sum(types == _T_FIB))
+
+    # Vascular  (state 0=TIP, 2=PHALANX; 1=STALK excluded at write time)
+    mask = types == _T_VAS
+    counts['vas_tip']     = int(np.sum(mask & (states == 0)))
+    counts['vas_phalanx'] = int(np.sum(mask & (states == 2)))
+
     return counts
 
 # ─── Parse PDE means (generic) ───────────────────────────────────────────────
@@ -164,8 +187,14 @@ def _parse_pde_means(path, col_map=None):
     return means
 
 def parse_pdac_pde(step):
-    path = os.path.join(PDAC_PDE_DIR, f"pde_step_{step:06d}.csv")
-    return _parse_pde_means(path, col_map=None)  # PDAC columns already canonical
+    path = os.path.join(PDAC_PDE_DIR, f"pde_step_{step:06d}.npy")
+    means = {c: np.nan for c in PDE_CHEMS}
+    if not os.path.exists(path):
+        return means
+    arr = np.load(path)   # shape (10, nz, ny, nx), dtype float32
+    for i, chem in enumerate(PDE_CHEMS):
+        means[chem] = float(arr[i].mean())
+    return means
 
 def parse_hcc_pde(step):
     path = os.path.join(HCC_DIR, f"grid_core_{step}.csv")
@@ -315,7 +344,7 @@ hcc_steps  = sorted([int(f.split('_')[1].split('.')[0])
                      for f in os.listdir(HCC_DIR)
                      if f.startswith('cell_') and f.endswith('.csv')
                      and 'Zone' not in f])
-pdac_files = sorted(glob.glob(os.path.join(PDAC_ABM_DIR, "agents_step_*.csv")))
+pdac_files = sorted(glob.glob(os.path.join(PDAC_ABM_DIR, "agents_step_*.npy")))
 pdac_steps = [int(os.path.basename(f).split('_')[2].split('.')[0]) for f in pdac_files]
 
 print(f"HCC steps:  {len(hcc_steps)}  ({hcc_steps[0]}–{hcc_steps[-1]})")

@@ -335,20 +335,22 @@ FLAMEGPU_AGENT_FUNCTION(vascular_move, flamegpu::MessageNone, flamegpu::MessageN
     const int z = FLAMEGPU->getVariable<int>("z");
     const int tumble = FLAMEGPU->getVariable<int>("tumble");
 
+    const int grid_x = FLAMEGPU->environment.getProperty<int>("grid_size_x");
+    const int grid_y = FLAMEGPU->environment.getProperty<int>("grid_size_y");
+    const int grid_z = FLAMEGPU->environment.getProperty<int>("grid_size_z");
+
     // ECM based movement probability
-    auto ecm = FLAMEGPU->environment.getMacroProperty<float,
-        OCC_GRID_MAX, OCC_GRID_MAX, OCC_GRID_MAX>("ecm_grid");
-    float ECM_density = ecm[x][y][z];
-    double ECM_sat = ECM_density / (ECM_density + FLAMEGPU->environment.getProperty<float>("PARAM_FIB_ECM_MOT_EC50"));
-    if (FLAMEGPU->random.uniform<float>() < ECM_sat) return flamegpu::ALIVE;
+    {
+        const float* ecm_ptr = reinterpret_cast<const float*>(
+            FLAMEGPU->environment.getProperty<uint64_t>("ecm_grid_ptr"));
+        float ECM_density = ecm_ptr[z * (grid_x * grid_y) + y * grid_x + x];
+        double ECM_sat = ECM_density / (ECM_density + FLAMEGPU->environment.getProperty<float>("PARAM_FIB_ECM_MOT_EC50"));
+        if (FLAMEGPU->random.uniform<float>() < ECM_sat) return flamegpu::ALIVE;
+    }
 
     const float move_dir_x = FLAMEGPU->getVariable<float>("move_direction_x");
     const float move_dir_y = FLAMEGPU->getVariable<float>("move_direction_y");
     const float move_dir_z = FLAMEGPU->getVariable<float>("move_direction_z");
-
-    const int grid_x = FLAMEGPU->environment.getProperty<int>("grid_size_x");
-    const int grid_y = FLAMEGPU->environment.getProperty<int>("grid_size_y");
-    const int grid_z = FLAMEGPU->environment.getProperty<int>("grid_size_z");
     const float dt = FLAMEGPU->environment.getProperty<float>("PARAM_SEC_PER_SLICE");
 
     // VEGFA gradient — read directly from PDE

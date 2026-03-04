@@ -36,6 +36,49 @@ double g_last_pde_ms = 0.0;  // exposed for timing CSV
 // Used by recruitment source-marking kernels to skip tumor-dense voxels.
 static unsigned int* d_cancer_occ = nullptr;
 
+// Flat device arrays for ECM (extracellular matrix) and fibroblast density field.
+// Replace MacroProperty-based approach to eliminate D2H/H2D copies every step.
+// Layout: idx = z * (nx * ny) + y * nx + x  (z-major, x-minor; matches PDE convention)
+static float* d_ecm_grid = nullptr;
+static float* d_fib_density_field = nullptr;
+
+// ============================================================================
+// CUDA Kernel: ECM Grid Update
+// Applies decay + fibroblast deposition + saturation clamping per voxel in parallel.
+// Called from update_ecm_grid host function after fib_build_density_field runs.
+// ============================================================================
+__global__ void update_ecm_grid_kernel(
+    float* ecm, const float* fib_field,
+    int nx, int ny, int nz,
+    float voxel_vol_cm3, float decay_rate, float dt,
+    float ecm_baseline, float ecm_saturation, float release_rate)
+{
+    const int tx = blockIdx.x * blockDim.x + threadIdx.x;
+    const int ty = blockIdx.y * blockDim.y + threadIdx.y;
+    const int tz = blockIdx.z * blockDim.z + threadIdx.z;
+    if (tx >= nx || ty >= ny || tz >= nz) return;
+
+    const int idx = tz * (nx * ny) + ty * nx + tx;
+
+    float curr_ecm     = ecm[idx];
+    float curr_ecm_amt = curr_ecm * voxel_vol_cm3;
+
+    // Exponential decay
+    float decayed = curr_ecm_amt * expf(-decay_rate * dt);
+
+    // Deposition from fibroblast density field (CAF-weighted Gaussian scatter)
+    float saturation  = fminf(curr_ecm / ecm_saturation, 1.0f);
+    float deposition  = fib_field[idx] * release_rate / 3.0f * (1.0f - saturation);
+
+    float new_ecm = (decayed + deposition) / voxel_vol_cm3;
+
+    // Clamp to [baseline, saturation]
+    new_ecm = fmaxf(new_ecm, ecm_baseline);
+    new_ecm = fminf(new_ecm, ecm_saturation);
+
+    ecm[idx] = new_ecm;
+}
+
 // ============================================================================
 // Host Function: Reset PDE Buffers (call before compute_chemical_sources)
 // ============================================================================
@@ -138,6 +181,13 @@ void initialize_pde_solver(int grid_x, int grid_y, int grid_z,
     CUDA_CHECK(cudaMalloc(&d_cancer_occ, total_voxels * sizeof(unsigned int)));
     CUDA_CHECK(cudaMemset(d_cancer_occ, 0, total_voxels * sizeof(unsigned int)));
 
+    // Allocate ECM and fibroblast density field device arrays.
+    // Initialized to 0.0f; update_ecm_grid_kernel clamps to ecm_baseline on first call.
+    CUDA_CHECK(cudaMalloc(&d_ecm_grid, total_voxels * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_ecm_grid, 0, total_voxels * sizeof(float)));
+    CUDA_CHECK(cudaMalloc(&d_fib_density_field, total_voxels * sizeof(float)));
+    CUDA_CHECK(cudaMemset(d_fib_density_field, 0, total_voxels * sizeof(float)));
+
     std::cout << "PDE Solver initialized and coupled to FLAME GPU 2" << std::endl;
 }
 
@@ -188,6 +238,12 @@ void set_pde_pointers_in_environment(flamegpu::ModelDescription& model) {
     model.Environment().newProperty<unsigned long long>("cancer_occ_ptr",
         static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(d_cancer_occ)));
 
+    // Store ECM and fibroblast density field pointers (replace MacroProperty approach)
+    model.Environment().newProperty<unsigned long long>("ecm_grid_ptr",
+        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(d_ecm_grid)));
+    model.Environment().newProperty<unsigned long long>("fib_density_field_ptr",
+        static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(d_fib_density_field)));
+
     std::cout << "PDE device pointers stored in FLAME GPU environment" << std::endl;
 }
 
@@ -199,6 +255,14 @@ void cleanup_pde_solver() {
     if (d_cancer_occ) {
         cudaFree(d_cancer_occ);
         d_cancer_occ = nullptr;
+    }
+    if (d_ecm_grid) {
+        cudaFree(d_ecm_grid);
+        d_ecm_grid = nullptr;
+    }
+    if (d_fib_density_field) {
+        cudaFree(d_fib_density_field);
+        d_fib_density_field = nullptr;
     }
 }
 
@@ -751,65 +815,47 @@ FLAMEGPU_HOST_FUNCTION(zero_occupancy_grid) {
 
 // ============================================================================
 // Zero Fibroblast Density Field (reset before scatter)
+// Uses cudaMemset on flat device array — no D2H/H2D copy.
 // ============================================================================
 FLAMEGPU_HOST_FUNCTION(zero_fib_density_field) {
     nvtxRangePush("Zero Fib Density");
-    auto field = FLAMEGPU->environment.getMacroProperty<float,
-        OCC_GRID_MAX, OCC_GRID_MAX, OCC_GRID_MAX>("fib_density_field");
-    field.zero();
+    if (d_fib_density_field && g_pde_solver) {
+        int total_voxels = g_pde_solver->get_total_voxels();
+        cudaMemset(d_fib_density_field, 0, total_voxels * sizeof(float));
+    }
     nvtxRangePop();
 }
 
 // ============================================================================
-// ECM Grid: Apply decay, deposition from fibroblast density field, and clamp
+// ECM Grid: Apply decay, deposition from fibroblast density field, and clamp.
+// Replaces the CPU triple-nested loop with a GPU kernel launch.
+// No MacroProperty D2H/H2D — operates entirely on device arrays.
 // ============================================================================
 FLAMEGPU_HOST_FUNCTION(update_ecm_grid) {
     nvtxRangePush("Update ECM Grid");
-    auto ecm = FLAMEGPU->environment.getMacroProperty<float,
-        OCC_GRID_MAX, OCC_GRID_MAX, OCC_GRID_MAX>("ecm_grid");
-    auto field = FLAMEGPU->environment.getMacroProperty<float,
-        OCC_GRID_MAX, OCC_GRID_MAX, OCC_GRID_MAX>("fib_density_field");
 
     const int grid_x = FLAMEGPU->environment.getProperty<int>("grid_size_x");
     const int grid_y = FLAMEGPU->environment.getProperty<int>("grid_size_y");
     const int grid_z = FLAMEGPU->environment.getProperty<int>("grid_size_z");
 
-    float voxel_size_cm = FLAMEGPU->environment.getProperty<float>("PARAM_VOXEL_SIZE_CM");
-    // ECM parameters
-    float decay_rate = FLAMEGPU->environment.getProperty<float>("PARAM_FIB_ECM_DECAY_RATE");
-    float ecm_baseline = FLAMEGPU->environment.getProperty<float>("PARAM_FIB_ECM_BASELINE");
+    float voxel_size_cm  = FLAMEGPU->environment.getProperty<float>("PARAM_VOXEL_SIZE_CM");
+    float decay_rate     = FLAMEGPU->environment.getProperty<float>("PARAM_FIB_ECM_DECAY_RATE");
+    float ecm_baseline   = FLAMEGPU->environment.getProperty<float>("PARAM_FIB_ECM_BASELINE");
     float ecm_saturation = FLAMEGPU->environment.getProperty<float>("PARAM_FIB_ECM_SATURATION");
-    float release_rate = FLAMEGPU->environment.getProperty<float>("PARAM_FIB_ECM_RELEASE_CAF");
-    float dt_sec = FLAMEGPU->environment.getProperty<float>("PARAM_SEC_PER_SLICE");
-    float dt = dt_sec / 86400.0f;  // seconds → days
+    float release_rate   = FLAMEGPU->environment.getProperty<float>("PARAM_FIB_ECM_RELEASE_CAF");
+    float dt_sec         = FLAMEGPU->environment.getProperty<float>("PARAM_SEC_PER_SLICE");
+    float dt             = dt_sec / 86400.0f;  // seconds → days
+    float voxel_vol_cm3  = voxel_size_cm * voxel_size_cm * voxel_size_cm;
 
-    // ============================================================================
-    // Apply ECM dynamics: decay + deposition from Gaussian density field + saturation
-    // ============================================================================
-    for (int i = 0; i < grid_x; i++) {
-        for (int j = 0; j < grid_y; j++) {
-            for (int k = 0; k < grid_z; k++) {
-                float curr_ecm = ecm[i][j][k];
-                float curr_ecm_amt = curr_ecm * std::pow(voxel_size_cm, 3);
+    dim3 block(8, 8, 8);
+    dim3 grid((grid_x + 7) / 8, (grid_y + 7) / 8, (grid_z + 7) / 8);
+    update_ecm_grid_kernel<<<grid, block>>>(
+        d_ecm_grid, d_fib_density_field,
+        grid_x, grid_y, grid_z,
+        voxel_vol_cm3, decay_rate, dt,
+        ecm_baseline, ecm_saturation, release_rate);
+    cudaDeviceSynchronize();
 
-                // Exponential decay: ECM_n = ECM_{n-1} * exp(-decay_rate * dt)
-                float decayed = curr_ecm_amt * expf(-decay_rate * dt);
-
-                // Deposition from Gaussian density field
-                float fib_field_val = field[i][j][k];
-                float saturation = fminf(curr_ecm / ecm_saturation, 1.0f);
-                float deposition = fib_field_val * release_rate / 3.0f * (1.0f - saturation);
-
-                float new_ecm = (decayed + deposition) / std::pow(voxel_size_cm, 3);
-
-                // Enforce bounds [baseline, saturation]
-                if (new_ecm < ecm_baseline) new_ecm = ecm_baseline;
-                if (new_ecm > ecm_saturation) new_ecm = ecm_saturation;
-
-                ecm[i][j][k] = new_ecm;
-            }
-        }
-    }
     nvtxRangePop();
 }
 

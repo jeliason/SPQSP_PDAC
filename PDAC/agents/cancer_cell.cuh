@@ -554,12 +554,14 @@ FLAMEGPU_AGENT_FUNCTION(cancer_move, flamegpu::MessageNone, flamegpu::MessageNon
     const int size_z = FLAMEGPU->environment.getProperty<int>("grid_size_z");
 
     // ECM based movement probability: higher ECM → more likely to be blocked
-    auto ecm = FLAMEGPU->environment.getMacroProperty<float,
-        OCC_GRID_MAX, OCC_GRID_MAX, OCC_GRID_MAX>("ecm_grid");
-    float ECM_density = static_cast<float>(ecm[x][y][z]);
-    float ECM_50 = FLAMEGPU->environment.getProperty<float>("PARAM_FIB_ECM_MOT_EC50");
-    float ECM_sat = ECM_density / (ECM_density + ECM_50);
-    if (FLAMEGPU->random.uniform<float>() < ECM_sat) return flamegpu::ALIVE;
+    {
+        const float* ecm_ptr = reinterpret_cast<const float*>(
+            FLAMEGPU->environment.getProperty<uint64_t>("ecm_grid_ptr"));
+        float ECM_density = ecm_ptr[z * (size_x * size_y) + y * size_x + x];
+        float ECM_50 = FLAMEGPU->environment.getProperty<float>("PARAM_FIB_ECM_MOT_EC50");
+        float ECM_sat = ECM_density / (ECM_density + ECM_50);
+        if (FLAMEGPU->random.uniform<float>() < ECM_sat) return flamegpu::ALIVE;
+    }
 
     auto occ = FLAMEGPU->environment.getMacroProperty<unsigned int,
         OCC_GRID_MAX, OCC_GRID_MAX, OCC_GRID_MAX, NUM_OCC_TYPES>("occ_grid");

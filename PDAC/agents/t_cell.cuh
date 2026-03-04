@@ -214,7 +214,7 @@ FLAMEGPU_AGENT_FUNCTION(tcell_state_step, flamegpu::MessageNone, flamegpu::Messa
                 exhausted = true;
             }
         }
-        if (neighbor_all > 0){
+        else if (neighbor_all > 0){
             float bond = get_PD1_PDL1(max_PDL1, nivo,
                         FLAMEGPU->environment.getProperty<float>("PARAM_PD1_SYN"),
                         FLAMEGPU->environment.getProperty<float>("PARAM_PDL1_K1"),
@@ -444,12 +444,14 @@ FLAMEGPU_AGENT_FUNCTION(tcell_move, flamegpu::MessageNone, flamegpu::MessageNone
     const int grid_z = FLAMEGPU->environment.getProperty<int>("grid_size_z");
 
     // ECM based movement probability: higher ECM → more likely to be blocked
-    auto ecm = FLAMEGPU->environment.getMacroProperty<float,
-        OCC_GRID_MAX, OCC_GRID_MAX, OCC_GRID_MAX>("ecm_grid");
-    float ECM_density = static_cast<float>(ecm[x][y][z]);
-    float ECM_50 = FLAMEGPU->environment.getProperty<float>("PARAM_FIB_ECM_MOT_EC50");
-    float ECM_sat = ECM_density / (ECM_density + ECM_50);
-    if (FLAMEGPU->random.uniform<float>() < ECM_sat) return flamegpu::ALIVE;
+    {
+        const float* ecm_ptr = reinterpret_cast<const float*>(
+            FLAMEGPU->environment.getProperty<uint64_t>("ecm_grid_ptr"));
+        float ECM_density = ecm_ptr[z * (grid_x * grid_y) + y * grid_x + x];
+        float ECM_50 = FLAMEGPU->environment.getProperty<float>("PARAM_FIB_ECM_MOT_EC50");
+        float ECM_sat = ECM_density / (ECM_density + ECM_50);
+        if (FLAMEGPU->random.uniform<float>() < ECM_sat) return flamegpu::ALIVE;
+    }
 
     const float move_dir_x = FLAMEGPU->getVariable<float>("move_direction_x");
     const float move_dir_y = FLAMEGPU->getVariable<float>("move_direction_y");
@@ -516,57 +518,27 @@ FLAMEGPU_AGENT_FUNCTION(tcell_move, flamegpu::MessageNone, flamegpu::MessageNone
         }
     }
     // === TUMBLE PHASE (tumble == 1) ===
+    // Pick a uniformly random direction from all 26 Moore neighbors (matches HCC behavior).
     else {
-        const float sigma = 0.524f;
-        float prob_sum = 0.0f;
-        float probs[26];
         int dirs[26][3];
         int n_dirs = 0;
 
-        float norm_movedir = std::sqrt(move_dir_x * move_dir_x +
-                                      move_dir_y * move_dir_y +
-                                      move_dir_z * move_dir_z);
-        if (norm_movedir < 1e-6f) norm_movedir = 1.0f;
-
-        // Sample all 26 Moore neighbors
         for (int i = -1; i <= 1; i++) {
             for (int j = -1; j <= 1; j++) {
                 for (int k = -1; k <= 1; k++) {
                     if (i == 0 && j == 0 && k == 0) continue;
-                    float dot_product = i * move_dir_x + j * move_dir_y + k * move_dir_z;
-                    float norm_dir = std::sqrt(static_cast<float>(i*i + j*j + k*k));
-                    float cos_theta = dot_product / (norm_dir * norm_movedir);
-                    if (cos_theta > 0) {
-                        float rho = std::exp(cos_theta / (sigma * sigma)) / std::exp(1.0f / (sigma * sigma));
-                        prob_sum += rho;
-                        probs[n_dirs] = prob_sum;
-                        dirs[n_dirs][0] = i;
-                        dirs[n_dirs][1] = j;
-                        dirs[n_dirs][2] = k;
-                        n_dirs++;
-                    }
+                    dirs[n_dirs][0] = i;
+                    dirs[n_dirs][1] = j;
+                    dirs[n_dirs][2] = k;
+                    n_dirs++;
                 }
             }
         }
 
-        if (n_dirs == 0) {
-            FLAMEGPU->setVariable<int>("tumble", 0);
-            return flamegpu::ALIVE;
-        }
+        // Uniform random selection (n_dirs == 26 always)
+        int selected_idx = static_cast<int>(FLAMEGPU->random.uniform<float>() * n_dirs);
+        if (selected_idx >= n_dirs) selected_idx = n_dirs - 1;
 
-        for (int i = 0; i < n_dirs; i++) probs[i] /= prob_sum;
-
-        // Weighted random selection of next direction
-        float r = FLAMEGPU->random.uniform<float>();
-        int selected_idx = 0;
-        for (int i = 0; i < n_dirs; i++) {
-            if (r < probs[i]) {
-                selected_idx = i;
-                break;
-            }
-        }
-
-        // Set new movement direction
         FLAMEGPU->setVariable<float>("move_direction_x", static_cast<float>(dirs[selected_idx][0]));
         FLAMEGPU->setVariable<float>("move_direction_y", static_cast<float>(dirs[selected_idx][1]));
         FLAMEGPU->setVariable<float>("move_direction_z", static_cast<float>(dirs[selected_idx][2]));

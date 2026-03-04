@@ -8,6 +8,7 @@
 #include <nvtx3/nvToolsExt.h>
 #include <chrono>
 #include <filesystem>
+#include <thread>
 
 #include "../core/common.cuh"
 #include "../core/layer_timing.h"
@@ -26,6 +27,8 @@ extern double get_last_qsp_ms();
 
 // QSP CSV export step function (defined in qsp_integration.cu)
 extern flamegpu::FLAMEGPU_STEP_FUNCTION_POINTER exportQSPData;
+// QSP step-0 export (initial condition, called before main loop)
+namespace PDAC { extern void exportQSPData_step0(); }
 
 namespace PDAC {
     std::unique_ptr<flamegpu::ModelDescription> buildModel(
@@ -54,411 +57,337 @@ void ensureOutputDirectories() {
 // Simulation Monitoring Functions
 // ============================================================================
 
+// ============================================================================
+// NPY Writer for PDE Output
+// Writes all NUM_SUBSTRATES chemical fields as a single NPY file.
+// Shape: (NUM_SUBSTRATES, grid_z, grid_y, grid_x), dtype float32, C-order.
+// Python: arr = np.load("pde_step_000001.npy")  → shape (10, nz, ny, nx)
+// ============================================================================
+// Write a pre-filled float buffer as NPY to disk (no device access — safe from background thread).
+static void write_pde_npy_buf(const char* path, int grid_x, int grid_y, int grid_z,
+                               const std::vector<float>& buf) {
+    const int ns = PDAC::NUM_SUBSTRATES;
+
+    char header_str[256];
+    int header_len = snprintf(header_str, sizeof(header_str),
+        "{'descr': '<f4', 'fortran_order': False, 'shape': (%d, %d, %d, %d), }",
+        ns, grid_z, grid_y, grid_x);
+
+    const int prefix_size = 10;
+    int padded_header_len = header_len + 1;
+    int block = ((prefix_size + padded_header_len + 63) / 64) * 64;
+    int pad_spaces = block - prefix_size - padded_header_len;
+
+    FILE* fp = fopen(path, "wb");
+    if (!fp) {
+        std::cerr << "[WARN] Could not open NPY file for write: " << path << std::endl;
+        return;
+    }
+
+    const unsigned char magic[8] = {0x93, 'N', 'U', 'M', 'P', 'Y', 0x01, 0x00};
+    fwrite(magic, 1, 8, fp);
+
+    uint16_t hdr_total = static_cast<uint16_t>(padded_header_len + pad_spaces);
+    fwrite(&hdr_total, sizeof(uint16_t), 1, fp);
+
+    fwrite(header_str, 1, header_len, fp);
+    for (int i = 0; i < pad_spaces; i++) fputc(' ', fp);
+    fputc('\n', fp);
+
+    fwrite(buf.data(), sizeof(float), buf.size(), fp);
+    fclose(fp);
+}
+
+// Collect all substrates from device into a host buffer (must run on main thread).
+static void collect_pde_to_buf(std::vector<float>& buf, int grid_x, int grid_y, int grid_z) {
+    const int ns = PDAC::NUM_SUBSTRATES;
+    const int total_voxels = grid_x * grid_y * grid_z;
+    buf.resize(static_cast<size_t>(ns) * total_voxels);
+    for (int s = 0; s < ns; s++)
+        PDAC::g_pde_solver->get_concentrations(buf.data() + s * total_voxels, s);
+}
+
+// ============================================================================
+// Async I/O: double-buffered background write threads.
+// D2H collection stays synchronous on the main thread.
+// File writes (the slow part) are launched in background std::thread.
+// Each call joins the previous write before starting a new one.
+// Call flush_async_io() before cleanup to drain pending writes.
+// ============================================================================
+static std::vector<float>   g_pde_bufs[2];
+static std::vector<int32_t> g_abm_bufs[2];
+static std::thread g_pde_io_thread;
+static std::thread g_abm_io_thread;
+static int g_pde_buf_idx = 0;
+static int g_abm_buf_idx = 0;
+
+static void flush_async_io() {
+    if (g_pde_io_thread.joinable()) g_pde_io_thread.join();
+    if (g_abm_io_thread.joinable()) g_abm_io_thread.join();
+}
+
 // Called manually from main() after presim completes — captures true day-0 PDE state.
 void exportPDEData_step0(int grid_x, int grid_y, int grid_z) {
     ensureOutputDirectories();
     if (!PDAC::g_pde_solver) return;
 
-    std::ostringstream filename;
-    filename << "outputs/pde/pde_step_" << std::setw(6) << std::setfill('0') << 0 << ".csv";
-    std::ofstream file(filename.str());
-    file << "x,y,z,O2,IFN,IL2,IL10,TGFB,CCL2,ARGI,NO,IL12,VEGFA\n";
-
-    const int total_voxels = grid_x * grid_y * grid_z;
-    std::vector<std::vector<float>> all_concentrations(PDAC::NUM_SUBSTRATES);
-    for (int s = 0; s < PDAC::NUM_SUBSTRATES; s++) {
-        all_concentrations[s].resize(total_voxels);
-        PDAC::g_pde_solver->get_concentrations(all_concentrations[s].data(), s);
-    }
-
-    for (int z = 0; z < grid_z; z++) {
-        for (int y = 0; y < grid_y; y++) {
-            for (int x = 0; x < grid_x; x++) {
-                int idx = z * (grid_x * grid_y) + y * grid_x + x;
-                file << x << "," << y << "," << z;
-                for (int s = 0; s < PDAC::NUM_SUBSTRATES; s++)
-                    file << "," << all_concentrations[s][idx];
-                file << "\n";
-            }
-        }
-    }
-    file.close();
+    if (g_pde_io_thread.joinable()) g_pde_io_thread.join();
+    int bi = g_pde_buf_idx;
+    collect_pde_to_buf(g_pde_bufs[bi], grid_x, grid_y, grid_z);
+    std::string path = "outputs/pde/pde_step_000000.npy";
+    g_pde_io_thread = std::thread([bi, path, grid_x, grid_y, grid_z]() {
+        write_pde_npy_buf(path.c_str(), grid_x, grid_y, grid_z, g_pde_bufs[bi]);
+    });
+    g_pde_buf_idx = 1 - bi;
 }
 
 FLAMEGPU_STEP_FUNCTION(exportPDEData) {
     if (PDAC::is_presim_mode_active()) return;
     if (!PDAC::g_pde_solver) return;
 
-    ensureOutputDirectories();
-
     const unsigned int main_step = FLAMEGPU->environment.getProperty<unsigned int>("main_sim_step");
     const int interval = FLAMEGPU->environment.getProperty<int>("interval_out");
     if (main_step % interval != 0) return;
 
-    // Get grid dimensions
+    ensureOutputDirectories();
+
     const int grid_x = FLAMEGPU->environment.getProperty<int>("grid_size_x");
     const int grid_y = FLAMEGPU->environment.getProperty<int>("grid_size_y");
     const int grid_z = FLAMEGPU->environment.getProperty<int>("grid_size_z");
 
-    std::ostringstream filename;
-    filename << "outputs/pde/pde_step_" << std::setw(6) << std::setfill('0') << main_step << ".csv";
-    std::ofstream file(filename.str());
+    if (g_pde_io_thread.joinable()) g_pde_io_thread.join();
+    int bi = g_pde_buf_idx;
+    collect_pde_to_buf(g_pde_bufs[bi], grid_x, grid_y, grid_z);
 
-    // Write header
-    file << "x,y,z,O2,IFN,IL2,IL10,TGFB,CCL2,ARGI,NO,IL12,VEGFA\n";
+    char path_buf[256];
+    snprintf(path_buf, sizeof(path_buf), "outputs/pde/pde_step_%06d.npy",
+             static_cast<int>(main_step + 1));
+    std::string path = path_buf;
+    g_pde_io_thread = std::thread([bi, path, grid_x, grid_y, grid_z]() {
+        write_pde_npy_buf(path.c_str(), grid_x, grid_y, grid_z, g_pde_bufs[bi]);
+    });
+    g_pde_buf_idx = 1 - bi;
+}
 
-    // Allocate host buffer for concentration data
-    const int total_voxels = grid_x * grid_y * grid_z;
-    std::vector<float> concentrations(total_voxels);
+// ============================================================================
+// Binary NPY ABM Output
+//
+// Shape: (N_agents, 8), dtype int32
+// Columns: [type_id, agent_id, x, y, z, cell_state, life, extra]
+//   type_id:    0=CANCER 1=TCELL 2=TREG 3=MDSC 4=MAC 5=FIB 6=VAS
+//   cell_state: enum int (STEM=0/PROG=1/SEN=2; EFF=0/CYT=1/SUPP=2; etc.)
+//   life:       age counter (0 for cancer/vascular which don't use it)
+//   extra:      divideCD for cancer, 0 for all others
+//
+// Python:
+//   import numpy as np, pandas as pd
+//   arr = np.load("agents_step_000001.npy")
+//   df = pd.DataFrame(arr, columns=["type","id","x","y","z","state","life","extra"])
+// ============================================================================
+static constexpr int ABM_NCOLS = 8;
+static constexpr int32_t ABM_TYPE_CANCER = 0;
+static constexpr int32_t ABM_TYPE_TCELL  = 1;
+static constexpr int32_t ABM_TYPE_TREG   = 2;
+static constexpr int32_t ABM_TYPE_MDSC   = 3;
+static constexpr int32_t ABM_TYPE_MAC    = 4;
+static constexpr int32_t ABM_TYPE_FIB    = 5;
+static constexpr int32_t ABM_TYPE_VAS    = 6;
 
-    // Create a 2D array to store all substrate concentrations [NUM_SUBSTRATES][total_voxels]
-    std::vector<std::vector<float>> all_concentrations(PDAC::NUM_SUBSTRATES);
+// g_abm_buf kept for step-0 (uses AgentVector API outside step functions)
+static std::vector<int32_t> g_abm_buf;
 
-    // Read all substrates from device
-    for (int substrate_idx = 0; substrate_idx < PDAC::NUM_SUBSTRATES; substrate_idx++) {
-        all_concentrations[substrate_idx].resize(total_voxels);
-        PDAC::g_pde_solver->get_concentrations(all_concentrations[substrate_idx].data(), substrate_idx);
+// Write int32 ABM buffer to NPY (no device access — safe from background thread).
+static void write_abm_npy(const char* path, const std::vector<int32_t>& buf) {
+    int n_agents = static_cast<int>(buf.size()) / ABM_NCOLS;
+    char hdr[256];
+    int hlen = snprintf(hdr, sizeof(hdr),
+        "{'descr': '<i4', 'fortran_order': False, 'shape': (%d, %d), }",
+        n_agents, ABM_NCOLS);
+    const int prefix = 10;
+    int padded = hlen + 1;
+    int block = ((prefix + padded + 63) / 64) * 64;
+    int spaces = block - prefix - padded;
+
+    FILE* fp = fopen(path, "wb");
+    if (!fp) { std::cerr << "[WARN] Cannot open " << path << "\n"; return; }
+    const unsigned char magic[8] = {0x93,'N','U','M','P','Y',0x01,0x00};
+    fwrite(magic, 1, 8, fp);
+    uint16_t hdr_total = static_cast<uint16_t>(padded + spaces);
+    fwrite(&hdr_total, 2, 1, fp);
+    fwrite(hdr, 1, hlen, fp);
+    for (int i = 0; i < spaces; i++) fputc(' ', fp);
+    fputc('\n', fp);
+    fwrite(buf.data(), sizeof(int32_t), buf.size(), fp);
+    fclose(fp);
+}
+
+static inline void abm_push(std::vector<int32_t>& buf,
+    int32_t type, int32_t id,
+    int32_t x, int32_t y, int32_t z,
+    int32_t state, int32_t life, int32_t extra)
+{
+    buf.push_back(type); buf.push_back(id);
+    buf.push_back(x);    buf.push_back(y);    buf.push_back(z);
+    buf.push_back(state); buf.push_back(life); buf.push_back(extra);
+}
+
+// Step-0 version: uses host-side AgentVector API (called outside step functions)
+static void collect_abm_step0(flamegpu::CUDASimulation& sim,
+                               flamegpu::ModelDescription& model,
+                               std::vector<int32_t>& buf) {
+    buf.clear();
+    {
+        flamegpu::AgentVector p(model.Agent(PDAC::AGENT_CANCER_CELL));
+        sim.getPopulationData(p);
+        for (unsigned i = 0; i < p.size(); ++i)
+            abm_push(buf, ABM_TYPE_CANCER, (int32_t)p[i].getID(),
+                p[i].getVariable<int>("x"), p[i].getVariable<int>("y"), p[i].getVariable<int>("z"),
+                p[i].getVariable<int>("cell_state"), 0,
+                p[i].getVariable<int>("divideCD"));
     }
-
-    // Write data for each voxel
-    for (int z = 0; z < grid_z; z++) {
-        for (int y = 0; y < grid_y; y++) {
-            for (int x = 0; x < grid_x; x++) {
-                int voxel_idx = z * (grid_x * grid_y) + y * grid_x + x;
-
-                file << x << "," << y << "," << z;
-
-                // Write all substrate concentrations
-                for (int substrate_idx = 0; substrate_idx < PDAC::NUM_SUBSTRATES; substrate_idx++) {
-                    file << "," << all_concentrations[substrate_idx][voxel_idx];
-                }
-
-                file << "\n";
-            }
+    {
+        flamegpu::AgentVector p(model.Agent(PDAC::AGENT_TCELL));
+        sim.getPopulationData(p);
+        for (unsigned i = 0; i < p.size(); ++i)
+            abm_push(buf, ABM_TYPE_TCELL, (int32_t)p[i].getID(),
+                p[i].getVariable<int>("x"), p[i].getVariable<int>("y"), p[i].getVariable<int>("z"),
+                p[i].getVariable<int>("cell_state"), p[i].getVariable<int>("life"), 0);
+    }
+    {
+        flamegpu::AgentVector p(model.Agent(PDAC::AGENT_TREG));
+        sim.getPopulationData(p);
+        for (unsigned i = 0; i < p.size(); ++i)
+            abm_push(buf, ABM_TYPE_TREG, (int32_t)p[i].getID(),
+                p[i].getVariable<int>("x"), p[i].getVariable<int>("y"), p[i].getVariable<int>("z"),
+                p[i].getVariable<int>("cell_state"), p[i].getVariable<int>("life"), 0);
+    }
+    {
+        flamegpu::AgentVector p(model.Agent(PDAC::AGENT_MDSC));
+        sim.getPopulationData(p);
+        for (unsigned i = 0; i < p.size(); ++i)
+            abm_push(buf, ABM_TYPE_MDSC, (int32_t)p[i].getID(),
+                p[i].getVariable<int>("x"), p[i].getVariable<int>("y"), p[i].getVariable<int>("z"),
+                0, p[i].getVariable<int>("life"), 0);
+    }
+    {
+        flamegpu::AgentVector p(model.Agent(PDAC::AGENT_MACROPHAGE));
+        sim.getPopulationData(p);
+        for (unsigned i = 0; i < p.size(); ++i)
+            abm_push(buf, ABM_TYPE_MAC, (int32_t)p[i].getID(),
+                p[i].getVariable<int>("x"), p[i].getVariable<int>("y"), p[i].getVariable<int>("z"),
+                p[i].getVariable<int>("cell_state"), p[i].getVariable<int>("life"), 0);
+    }
+    {
+        flamegpu::AgentVector p(model.Agent(PDAC::AGENT_FIBROBLAST));
+        sim.getPopulationData(p);
+        for (unsigned i = 0; i < p.size(); ++i)
+            abm_push(buf, ABM_TYPE_FIB, (int32_t)p[i].getID(),
+                p[i].getVariable<int>("x"), p[i].getVariable<int>("y"), p[i].getVariable<int>("z"),
+                p[i].getVariable<int>("cell_state"), p[i].getVariable<int>("life"), 0);
+    }
+    {
+        flamegpu::AgentVector p(model.Agent(PDAC::AGENT_VASCULAR));
+        sim.getPopulationData(p);
+        for (unsigned i = 0; i < p.size(); ++i) {
+            int st = p[i].getVariable<int>("cell_state");
+            if (st == 1) continue;
+            abm_push(buf, ABM_TYPE_VAS, (int32_t)p[i].getID(),
+                p[i].getVariable<int>("x"), p[i].getVariable<int>("y"), p[i].getVariable<int>("z"),
+                st, 0, 0);
         }
     }
+}
 
-    file.close();
+// In-step version: uses DeviceAgentVector API, writes to provided buffer
+static void collect_abm_step(flamegpu::HostAPI* FLAMEGPU, std::vector<int32_t>& buf) {
+    buf.clear();
+    {
+        flamegpu::DeviceAgentVector p = FLAMEGPU->agent(PDAC::AGENT_CANCER_CELL).getPopulationData();
+        for (unsigned i = 0; i < p.size(); ++i)
+            abm_push(buf, ABM_TYPE_CANCER, (int32_t)p[i].getID(),
+                p[i].getVariable<int>("x"), p[i].getVariable<int>("y"), p[i].getVariable<int>("z"),
+                p[i].getVariable<int>("cell_state"), 0,
+                p[i].getVariable<int>("divideCD"));
+    }
+    {
+        flamegpu::DeviceAgentVector p = FLAMEGPU->agent(PDAC::AGENT_TCELL).getPopulationData();
+        for (unsigned i = 0; i < p.size(); ++i)
+            abm_push(buf, ABM_TYPE_TCELL, (int32_t)p[i].getID(),
+                p[i].getVariable<int>("x"), p[i].getVariable<int>("y"), p[i].getVariable<int>("z"),
+                p[i].getVariable<int>("cell_state"), p[i].getVariable<int>("life"), 0);
+    }
+    {
+        flamegpu::DeviceAgentVector p = FLAMEGPU->agent(PDAC::AGENT_TREG).getPopulationData();
+        for (unsigned i = 0; i < p.size(); ++i)
+            abm_push(buf, ABM_TYPE_TREG, (int32_t)p[i].getID(),
+                p[i].getVariable<int>("x"), p[i].getVariable<int>("y"), p[i].getVariable<int>("z"),
+                p[i].getVariable<int>("cell_state"), p[i].getVariable<int>("life"), 0);
+    }
+    {
+        flamegpu::DeviceAgentVector p = FLAMEGPU->agent(PDAC::AGENT_MDSC).getPopulationData();
+        for (unsigned i = 0; i < p.size(); ++i)
+            abm_push(buf, ABM_TYPE_MDSC, (int32_t)p[i].getID(),
+                p[i].getVariable<int>("x"), p[i].getVariable<int>("y"), p[i].getVariable<int>("z"),
+                0, p[i].getVariable<int>("life"), 0);
+    }
+    {
+        flamegpu::DeviceAgentVector p = FLAMEGPU->agent(PDAC::AGENT_MACROPHAGE).getPopulationData();
+        for (unsigned i = 0; i < p.size(); ++i)
+            abm_push(buf, ABM_TYPE_MAC, (int32_t)p[i].getID(),
+                p[i].getVariable<int>("x"), p[i].getVariable<int>("y"), p[i].getVariable<int>("z"),
+                p[i].getVariable<int>("cell_state"), p[i].getVariable<int>("life"), 0);
+    }
+    {
+        flamegpu::DeviceAgentVector p = FLAMEGPU->agent(PDAC::AGENT_FIBROBLAST).getPopulationData();
+        for (unsigned i = 0; i < p.size(); ++i)
+            abm_push(buf, ABM_TYPE_FIB, (int32_t)p[i].getID(),
+                p[i].getVariable<int>("x"), p[i].getVariable<int>("y"), p[i].getVariable<int>("z"),
+                p[i].getVariable<int>("cell_state"), p[i].getVariable<int>("life"), 0);
+    }
+    {
+        flamegpu::DeviceAgentVector p = FLAMEGPU->agent(PDAC::AGENT_VASCULAR).getPopulationData();
+        for (unsigned i = 0; i < p.size(); ++i) {
+            int st = p[i].getVariable<int>("cell_state");
+            if (st == 1) continue;
+            abm_push(buf, ABM_TYPE_VAS, (int32_t)p[i].getID(),
+                p[i].getVariable<int>("x"), p[i].getVariable<int>("y"), p[i].getVariable<int>("z"),
+                st, 0, 0);
+        }
+    }
 }
 
 // Called manually from main() after presim completes — captures true day-0 agent state.
 void exportABMData_step0(flamegpu::CUDASimulation& sim, flamegpu::ModelDescription& model) {
     ensureOutputDirectories();
-
-    std::ostringstream filename;
-    filename << "outputs/abm/agents_step_" << std::setw(6) << std::setfill('0') << 0 << ".csv";
-    std::ofstream file(filename.str());
-    file << "agent_type,agent_id,x,y,z,cell_state,additional_info\n";
-
-    // Cancer Cells
-    {
-        flamegpu::AgentVector cancer_pop(model.Agent(PDAC::AGENT_CANCER_CELL));
-        sim.getPopulationData(cancer_pop);
-        for (unsigned int i = 0; i < cancer_pop.size(); ++i) {
-            unsigned int id = cancer_pop[i].getID();
-            int x = cancer_pop[i].getVariable<int>("x");
-            int y = cancer_pop[i].getVariable<int>("y");
-            int z = cancer_pop[i].getVariable<int>("z");
-            int state = cancer_pop[i].getVariable<int>("cell_state");
-            int divideCD   = cancer_pop[i].getVariable<int>("divideCD");
-            int divideFlag = cancer_pop[i].getVariable<int>("divideFlag");
-            std::string state_name;
-            switch (state) {
-                case 0: state_name = "STEM"; break;
-                case 1: state_name = "PROGENITOR"; break;
-                case 2: state_name = "SENESCENT"; break;
-                default: state_name = "UNKNOWN"; break;
-            }
-            file << "CANCER," << id << "," << x << "," << y << "," << z << ","
-                 << state_name << ",divideCD=" << divideCD
-                 << ";divideFlag=" << divideFlag << "\n";
-        }
-    }
-
-    // T Cells
-    {
-        flamegpu::AgentVector tcell_pop(model.Agent(PDAC::AGENT_TCELL));
-        sim.getPopulationData(tcell_pop);
-        for (unsigned int i = 0; i < tcell_pop.size(); ++i) {
-            unsigned int id = tcell_pop[i].getID();
-            int x = tcell_pop[i].getVariable<int>("x");
-            int y = tcell_pop[i].getVariable<int>("y");
-            int z = tcell_pop[i].getVariable<int>("z");
-            int state = tcell_pop[i].getVariable<int>("cell_state");
-            int life  = tcell_pop[i].getVariable<int>("life");
-            std::string state_name;
-            switch (state) {
-                case 0: state_name = "EFFECTOR"; break;
-                case 1: state_name = "CYTOTOXIC"; break;
-                case 2: state_name = "SUPPRESSED"; break;
-                default: state_name = "UNKNOWN"; break;
-            }
-            file << "TCELL," << id << "," << x << "," << y << "," << z << ","
-                 << state_name << ",life=" << life << "\n";
-        }
-    }
-
-    // TRegs
-    {
-        flamegpu::AgentVector treg_pop(model.Agent(PDAC::AGENT_TREG));
-        sim.getPopulationData(treg_pop);
-        for (unsigned int i = 0; i < treg_pop.size(); ++i) {
-            unsigned int id = treg_pop[i].getID();
-            int x = treg_pop[i].getVariable<int>("x");
-            int y = treg_pop[i].getVariable<int>("y");
-            int z = treg_pop[i].getVariable<int>("z");
-            int state = treg_pop[i].getVariable<int>("cell_state");
-            int life = treg_pop[i].getVariable<int>("life");
-            std::string state_name;
-            switch (state) {
-                case 0: state_name = "TH"; break;
-                case 1: state_name = "REGULATORY"; break;
-                default: state_name = "UNKNOWN"; break;
-            }
-            file << "TREG," << id << "," << x << "," << y << "," << z << ","
-                 << state_name << ",life=" << life << "\n";
-        }
-    }
-
-    // MDSCs
-    {
-        flamegpu::AgentVector mdsc_pop(model.Agent(PDAC::AGENT_MDSC));
-        sim.getPopulationData(mdsc_pop);
-        for (unsigned int i = 0; i < mdsc_pop.size(); ++i) {
-            unsigned int id = mdsc_pop[i].getID();
-            int x = mdsc_pop[i].getVariable<int>("x");
-            int y = mdsc_pop[i].getVariable<int>("y");
-            int z = mdsc_pop[i].getVariable<int>("z");
-            int life = mdsc_pop[i].getVariable<int>("life");
-            file << "MDSC," << id << "," << x << "," << y << "," << z << ","
-                 << "MDSC,life=" << life << "\n";
-        }
-    }
-    // Macrophages
-    {
-        flamegpu::AgentVector mac_pop(model.Agent(PDAC::AGENT_MACROPHAGE));
-        sim.getPopulationData(mac_pop);
-        for (unsigned int i = 0; i < mac_pop.size(); ++i) {
-            unsigned int id = mac_pop[i].getID();
-            int x = mac_pop[i].getVariable<int>("x");
-            int y = mac_pop[i].getVariable<int>("y");
-            int z = mac_pop[i].getVariable<int>("z");
-            int cell_state = mac_pop[i].getVariable<int>("cell_state");
-            int life = mac_pop[i].getVariable<int>("life");
-            file << "MAC," << id << "," << x << "," << y << "," << z << ","
-                 << (cell_state == PDAC::MAC_M1 ? "M1" : "M2")
-                 << ",life=" << life << "\n";
-        }
-    }
-    // Fibroblasts
-    {
-        flamegpu::AgentVector fib_pop(model.Agent(PDAC::AGENT_FIBROBLAST));
-        sim.getPopulationData(fib_pop);
-        for (unsigned int i = 0; i < fib_pop.size(); ++i) {
-            unsigned int id = fib_pop[i].getID();
-            int x = fib_pop[i].getVariable<int>("x");
-            int y = fib_pop[i].getVariable<int>("y");
-            int z = fib_pop[i].getVariable<int>("z");
-            int cell_state = fib_pop[i].getVariable<int>("cell_state");
-            int life = fib_pop[i].getVariable<int>("life");
-            file << "FIB," << id << "," << x << "," << y << "," << z << ","
-                 << (cell_state == PDAC::FIB_CAF ? "CAF" : "NORMAL")
-                 << ",life=" << life << "\n";
-        }
-    }
-
-    // Vasculature — TIP and PHALANX only (matches HCC CPU output; STALK excluded)
-    {
-        flamegpu::AgentVector vas_pop(model.Agent(PDAC::AGENT_VASCULAR));
-        sim.getPopulationData(vas_pop);
-        for (unsigned int i = 0; i < vas_pop.size(); ++i) {
-            int vas_state = vas_pop[i].getVariable<int>("cell_state");
-            if (vas_state == 1) continue;  // Skip STALK
-            unsigned int id = vas_pop[i].getID();
-            int x = vas_pop[i].getVariable<int>("x");
-            int y = vas_pop[i].getVariable<int>("y");
-            int z = vas_pop[i].getVariable<int>("z");
-            std::string state_name = (vas_state == 0) ? "TIP" : "PHALANX";
-            file << "VAS," << id << "," << x << "," << y << "," << z << ","
-                 << state_name
-                 << ",life=" << 0 << "\n";
-        }
-    }
-    file.close();
+    if (g_abm_io_thread.joinable()) g_abm_io_thread.join();
+    int bi = g_abm_buf_idx;
+    collect_abm_step0(sim, model, g_abm_bufs[bi]);
+    std::string path = "outputs/abm/agents_step_000000.npy";
+    g_abm_io_thread = std::thread([bi, path]() {
+        write_abm_npy(path.c_str(), g_abm_bufs[bi]);
+    });
+    g_abm_buf_idx = 1 - bi;
 }
 
 FLAMEGPU_STEP_FUNCTION(exportABMData) {
     if (PDAC::is_presim_mode_active()) return;
-
-    ensureOutputDirectories();
-
     const unsigned int main_step = FLAMEGPU->environment.getProperty<unsigned int>("main_sim_step");
     const int interval = FLAMEGPU->environment.getProperty<int>("interval_out");
     if (main_step % interval != 0) return;
+    ensureOutputDirectories();
 
-    std::ostringstream filename;
-    filename << "outputs/abm/agents_step_" << std::setw(6) << std::setfill('0') << main_step << ".csv";
-    std::ofstream file(filename.str());
-    file << "agent_type,agent_id,x,y,z,cell_state,additional_info\n";
-    // Cancer Cells
-    {
-        auto agent = FLAMEGPU->agent(PDAC::AGENT_CANCER_CELL);
-        unsigned int count = agent.count();
-        if (count > 0) {
-            flamegpu::DeviceAgentVector cancer_pop = agent.getPopulationData();
-            for (unsigned int i = 0; i < count; ++i) {
-                unsigned int id = cancer_pop[i].getID();
-                int x = cancer_pop[i].getVariable<int>("x");
-                int y = cancer_pop[i].getVariable<int>("y");
-                int z = cancer_pop[i].getVariable<int>("z");
-                int state = cancer_pop[i].getVariable<int>("cell_state");
-                int divideCD = cancer_pop[i].getVariable<int>("divideCD");
-                int divideFlag = cancer_pop[i].getVariable<int>("divideFlag");
-                
-                std::string state_name;
-                switch (state) {
-                    case 0: state_name = "STEM"; break;
-                    case 1: state_name = "PROGENITOR"; break;
-                    case 2: state_name = "SENESCENT"; break;
-                    default: state_name = "UNKNOWN"; break;
-                }
-                
-                file << "CANCER," << id << "," << x << "," << y << "," << z << "," 
-                     << state_name << ",divideCD=" << divideCD 
-                     << ";divideFlag=" << divideFlag << "\n";
-            }
-        }
-    }
-    
-    // T Cells
-    {
-        auto agent = FLAMEGPU->agent(PDAC::AGENT_TCELL);
-        unsigned int count = agent.count();
-        if (count > 0) {
-            flamegpu::DeviceAgentVector tcell_pop = agent.getPopulationData();
-            for (unsigned int i = 0; i < count; ++i) {
-                unsigned int id = tcell_pop[i].getID();
-                int x = tcell_pop[i].getVariable<int>("x");
-                int y = tcell_pop[i].getVariable<int>("y");
-                int z = tcell_pop[i].getVariable<int>("z");
-                int state = tcell_pop[i].getVariable<int>("cell_state");
-                int life = tcell_pop[i].getVariable<int>("life");
-                
-                std::string state_name;
-                switch (state) {
-                    case 0: state_name = "EFFECTOR"; break;
-                    case 1: state_name = "CYTOTOXIC"; break;
-                    case 2: state_name = "SUPPRESSED"; break;
-                    default: state_name = "UNKNOWN"; break;
-                }
-                
-                file << "TCELL," << id << "," << x << "," << y << "," << z << "," 
-                     << state_name << ",life=" << life << "\n";
-            }
-        }
-    }
-    
-    // TRegs
-    {
-        auto agent = FLAMEGPU->agent(PDAC::AGENT_TREG);
-        unsigned int count = agent.count();
-        if (count > 0) {
-            flamegpu::DeviceAgentVector treg_pop = agent.getPopulationData();
-            for (unsigned int i = 0; i < count; ++i) {
-                unsigned int id = treg_pop[i].getID();
-                int x = treg_pop[i].getVariable<int>("x");
-                int y = treg_pop[i].getVariable<int>("y");
-                int z = treg_pop[i].getVariable<int>("z");
-                int state = treg_pop[i].getVariable<int>("cell_state");
-                int life = treg_pop[i].getVariable<int>("life");
-                std::string state_name = (state == PDAC::TCD4_TH) ? "TH" : "REGULATORY";
-                file << "TREG," << id << "," << x << "," << y << "," << z << ","
-                     << state_name << ",life=" << life << "\n";
-            }
-        }
-    }
-    
-    // MDSCs
-    {
-        auto agent = FLAMEGPU->agent(PDAC::AGENT_MDSC);
-        unsigned int count = agent.count();
-        if (count > 0) {
-            flamegpu::DeviceAgentVector mdsc_pop = agent.getPopulationData();
-            for (unsigned int i = 0; i < count; ++i) {
-                unsigned int id = mdsc_pop[i].getID();
-                int x = mdsc_pop[i].getVariable<int>("x");
-                int y = mdsc_pop[i].getVariable<int>("y");
-                int z = mdsc_pop[i].getVariable<int>("z");
-                int life = mdsc_pop[i].getVariable<int>("life");
+    if (g_abm_io_thread.joinable()) g_abm_io_thread.join();
+    int bi = g_abm_buf_idx;
+    collect_abm_step(FLAMEGPU, g_abm_bufs[bi]);
 
-                file << "MDSC," << id << "," << x << "," << y << "," << z << ","
-                     << "MDSC,life=" << life << "\n";
-            }
-        }
-    }
-    // Macrophages
-    {
-        auto agent = FLAMEGPU->agent(PDAC::AGENT_MACROPHAGE);
-        unsigned int count = agent.count();
-        if (count > 0) {
-            flamegpu::DeviceAgentVector mac_pop = agent.getPopulationData();
-            for (unsigned int i = 0; i < count; ++i) {
-                unsigned int id = mac_pop[i].getID();
-                int x = mac_pop[i].getVariable<int>("x");
-                int y = mac_pop[i].getVariable<int>("y");
-                int z = mac_pop[i].getVariable<int>("z");
-                int cell_state = mac_pop[i].getVariable<int>("cell_state");
-                int life = mac_pop[i].getVariable<int>("life");
-
-                file << "MAC," << id << "," << x << "," << y << "," << z << ","
-                     << (cell_state == PDAC::MAC_M1 ? "M1" : "M2")
-                     << ",life=" << life << "\n";
-            }
-        }
-    }
-    // Fibroblasts
-    {
-        auto agent = FLAMEGPU->agent(PDAC::AGENT_FIBROBLAST);
-        unsigned int count = agent.count();
-        if (count > 0) {
-            flamegpu::DeviceAgentVector fib_pop = agent.getPopulationData();
-            for (unsigned int i = 0; i < count; ++i) {
-                unsigned int id = fib_pop[i].getID();
-                int x = fib_pop[i].getVariable<int>("x");
-                int y = fib_pop[i].getVariable<int>("y");
-                int z = fib_pop[i].getVariable<int>("z");
-                int cell_state = fib_pop[i].getVariable<int>("cell_state");
-                int life = fib_pop[i].getVariable<int>("life");
-
-                file << "FIB," << id << "," << x << "," << y << "," << z << ","
-                     << (cell_state == PDAC::FIB_CAF ? "CAF" : "NORMAL")
-                     << ",life=" << life << "\n";
-            }
-        }
-    }
-
-    // Vasculature — TIP and PHALANX only (matches HCC CPU output; STALK excluded)
-    {
-        auto agent = FLAMEGPU->agent(PDAC::AGENT_VASCULAR);
-        unsigned int count = agent.count();
-        if (count > 0) {
-            flamegpu::DeviceAgentVector vas_pop = agent.getPopulationData();
-            for (unsigned int i = 0; i < count; ++i) {
-                int cell_state = vas_pop[i].getVariable<int>("cell_state");
-                if (cell_state == 1) continue;  // Skip STALK
-                unsigned int id = vas_pop[i].getID();
-                int x = vas_pop[i].getVariable<int>("x");
-                int y = vas_pop[i].getVariable<int>("y");
-                int z = vas_pop[i].getVariable<int>("z");
-                std::string state_name = (cell_state == 0) ? "TIP" : "PHALANX";
-
-                file << "VAS," << id << "," << x << "," << y << "," << z << ","
-                     << state_name
-                     << ",life=" << 0 << "\n";
-            }
-        }
-    }
-    file.close();
+    char path_buf[256];
+    snprintf(path_buf, sizeof(path_buf), "outputs/abm/agents_step_%06d.npy",
+             static_cast<int>(main_step + 1));
+    std::string path = path_buf;
+    g_abm_io_thread = std::thread([bi, path]() {
+        write_abm_npy(path.c_str(), g_abm_bufs[bi]);
+    });
+    g_abm_buf_idx = 1 - bi;
 }
 
 FLAMEGPU_STEP_FUNCTION(stepCounter) {
@@ -715,6 +644,7 @@ int main(int argc, const char** argv) {
     // ========== EXPORT DAY-0 STATE (after presim, before first treatment step) ==========
     if (config.pde_out) exportPDEData_step0(config.grid_x, config.grid_y, config.grid_z);
     if (config.abm_out) exportABMData_step0(simulation, *model);
+    PDAC::exportQSPData_step0();
 
     // ========== RUN SIMULATION ==========
     std::cout << "\n=== Starting Simulation ===" << std::endl;
@@ -723,6 +653,8 @@ int main(int argc, const char** argv) {
     std::ofstream event_file("outputs/event.csv");
     if (event_file.is_open()) {
         event_file << "Step,prolif.CD8.cytotoxic,recruit.CD8.effector,prolif.Th.default,recruit.Th.default,prolif.Treg.default\n";
+        // Step 0: initial condition — no events yet
+        event_file << "0,0,0,0,0,0\n";
     }
 
     // Open timing output file for per-step timing CSV
@@ -776,8 +708,8 @@ int main(int argc, const char** argv) {
             unsigned int host_events[5];
             cudaMemcpy(host_events, device_event_counters, 5 * sizeof(unsigned int), cudaMemcpyDeviceToHost);
 
-            // Output: prolif.CD8.cytotoxic, recruit.CD8.effector, prolif.Th.default, recruit.Th.default, prolif.Treg.default
-            event_file << i << "," << host_events[0] << "," << host_events[1] << ","
+            // Output: step index matches agents_step_{i+1}.csv (events that occurred during step i+1)
+            event_file << (i + 1) << "," << host_events[0] << "," << host_events[1] << ","
                        << host_events[2] << "," << host_events[3] << "," << host_events[4] << "\n";
             event_file.flush();
 
@@ -844,6 +776,9 @@ int main(int argc, const char** argv) {
                   << ", Cytotoxic: " << cyt_count
                   << ", Suppressed: " << supp_count << std::endl;
     }
+
+    // ========== DRAIN ASYNC I/O ==========
+    flush_async_io();
 
     // ========== CLEANUP ==========
     PDAC::cleanup_pde_solver();

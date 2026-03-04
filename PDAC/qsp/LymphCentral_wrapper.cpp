@@ -134,7 +134,6 @@ bool LymphCentralWrapper::initialize(const std::string& param_filename) {
 
         std::cout << "QSP steady-state warmup complete: t=" << tt / 86400.0
                   << " d, tum_vol=" << tum_vol << " cm^3" << std::endl;
-
         // =====================================================================
         // STEP 3: Setup main QSP model in full simulation mode
         // =====================================================================
