@@ -2,8 +2,8 @@
 
 ## Prerequisites
 
-- Access to a GPU allocation on Rockfish (`<PI_NAME>_gpu`)
 - SSH access to Rockfish login nodes
+- SLURM account with GPU partition access (e.g., `apopel1`)
 - Your fork: `git@github.com:jeliason/SPQSP_PDAC.git`
 
 ## 1. Start an Interactive GPU Session
@@ -11,13 +11,19 @@
 From a Rockfish login node:
 
 ```bash
-interact -p a100 -g 1 -n 6 -t 01:00:00 -a apopel1_gpu -q qos_gpu
+interact -p a100 -g 1 -n 6 -t 01:00:00 -a apopel1
 ```
 
-Replace `<PI_NAME>` with your PI's allocation name. To check your available accounts:
+To check which partitions are available:
 
 ```bash
-sacctmgr show assoc user=$USER format=account%30
+sinfo -s
+```
+
+To verify your account has GPU access (should print a start time, not an error):
+
+```bash
+srun -p a100 -A apopel1 --gres=gpu:1 -n 1 -t 00:05:00 --test-only hostname
 ```
 
 ### GPU Partition Options
