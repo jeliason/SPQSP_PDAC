@@ -56,10 +56,12 @@ done
 mkdir -p "${BUILD_DIR}"
 cd "${BUILD_DIR}"
 
-# Configure ccache for CUDA compilation
-export CMAKE_CUDA_COMPILER_LAUNCHER=ccache
-export CMAKE_CXX_COMPILER_LAUNCHER=ccache
-export CMAKE_C_COMPILER_LAUNCHER=ccache
+# Configure ccache for CUDA compilation (only if available)
+if command -v ccache &>/dev/null; then
+    export CMAKE_CUDA_COMPILER_LAUNCHER=ccache
+    export CMAKE_CXX_COMPILER_LAUNCHER=ccache
+    export CMAKE_C_COMPILER_LAUNCHER=ccache
+fi
 
 # Configure CMake
 CMAKE_ARGS=(
