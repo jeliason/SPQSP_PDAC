@@ -168,6 +168,13 @@ target_compile_options(pdac PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--diag-suppress=1301>
 )
 
+# Boost 1.82+ uses std::source_location in throw_exception.hpp which triggers
+# an nvcc bug with consteval. BOOST_DISABLE_CURRENT_LOCATION is the official
+# Boost flag to disable std::source_location usage in throw_exception.
+target_compile_definitions(pdac PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:BOOST_DISABLE_CURRENT_LOCATION>
+)
+
 # Build type
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
