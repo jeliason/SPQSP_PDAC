@@ -63,9 +63,10 @@ void ensureOutputDirectories() {
 // Shape: (NUM_SUBSTRATES, grid_z, grid_y, grid_x), dtype float32, C-order.
 // Python: arr = np.load("pde_step_000001.npy")  → shape (10, nz, ny, nx)
 // ============================================================================
-// Write a pre-filled float buffer as NPY to disk (no device access — safe from background thread).
+// Write a float buffer as NPY to disk (no device access — safe from background thread).
+// Takes raw pointer + element count to work with both std::vector and pinned memory.
 static void write_pde_npy_buf(const char* path, int grid_x, int grid_y, int grid_z,
-                               const std::vector<float>& buf) {
+                               const float* data, size_t n_floats) {
     const int ns = PDAC::NUM_SUBSTRATES;
 
     char header_str[256];
@@ -94,51 +95,83 @@ static void write_pde_npy_buf(const char* path, int grid_x, int grid_y, int grid
     for (int i = 0; i < pad_spaces; i++) fputc(' ', fp);
     fputc('\n', fp);
 
-    fwrite(buf.data(), sizeof(float), buf.size(), fp);
+    fwrite(data, sizeof(float), n_floats, fp);
     fclose(fp);
 }
 
-// Collect all substrates from device into a host buffer (must run on main thread).
-static void collect_pde_to_buf(std::vector<float>& buf, int grid_x, int grid_y, int grid_z) {
-    const int ns = PDAC::NUM_SUBSTRATES;
-    const int total_voxels = grid_x * grid_y * grid_z;
-    buf.resize(static_cast<size_t>(ns) * total_voxels);
-    for (int s = 0; s < ns; s++)
-        PDAC::g_pde_solver->get_concentrations(buf.data() + s * total_voxels, s);
-}
+// ============================================================================
+// Async I/O with pinned memory + CUDA streams
+//
+// Optimizations over the previous version:
+//   1. PDE: single cudaMemcpyAsync of all substrates (was 10 separate cudaMemcpy)
+//   2. Pinned (page-locked) host memory for DMA-capable async D2H transfers
+//   3. Dedicated CUDA stream so D2H can overlap with next step's GPU compute
+//   4. Double-buffered: one buffer receives D2H while the other is written to disk
+// ============================================================================
 
-// ============================================================================
-// Async I/O: double-buffered background write threads.
-// D2H collection stays synchronous on the main thread.
-// File writes (the slow part) are launched in background std::thread.
-// Each call joins the previous write before starting a new one.
-// Call flush_async_io() before cleanup to drain pending writes.
-// ============================================================================
-static std::vector<float>   g_pde_bufs[2];
+// Pinned-memory double buffers for PDE output
+static float*   g_pde_pinned[2] = {nullptr, nullptr};
+static size_t   g_pde_buf_floats = 0;       // NUM_SUBSTRATES * total_voxels
+static cudaStream_t g_pde_stream = nullptr;  // dedicated D2H stream
+static cudaEvent_t  g_pde_event  = nullptr;  // signals D2H completion
+
+// ABM still uses std::vector (data comes from FLAMEGPU host API, not device)
 static std::vector<int32_t> g_abm_bufs[2];
+
 static std::thread g_pde_io_thread;
 static std::thread g_abm_io_thread;
 static int g_pde_buf_idx = 0;
 static int g_abm_buf_idx = 0;
+
+// Allocate pinned PDE buffers and CUDA stream (call once after grid size is known)
+static void init_pde_io(int grid_x, int grid_y, int grid_z) {
+    g_pde_buf_floats = static_cast<size_t>(PDAC::NUM_SUBSTRATES) * grid_x * grid_y * grid_z;
+    size_t bytes = g_pde_buf_floats * sizeof(float);
+    cudaMallocHost(&g_pde_pinned[0], bytes);
+    cudaMallocHost(&g_pde_pinned[1], bytes);
+    cudaStreamCreateWithFlags(&g_pde_stream, cudaStreamNonBlocking);
+    cudaEventCreateWithFlags(&g_pde_event, cudaEventDisableTiming);
+}
+
+// Free pinned PDE buffers and stream (call at cleanup)
+static void cleanup_pde_io() {
+    if (g_pde_pinned[0]) { cudaFreeHost(g_pde_pinned[0]); g_pde_pinned[0] = nullptr; }
+    if (g_pde_pinned[1]) { cudaFreeHost(g_pde_pinned[1]); g_pde_pinned[1] = nullptr; }
+    if (g_pde_stream) { cudaStreamDestroy(g_pde_stream); g_pde_stream = nullptr; }
+    if (g_pde_event)  { cudaEventDestroy(g_pde_event);  g_pde_event  = nullptr; }
+}
 
 static void flush_async_io() {
     if (g_pde_io_thread.joinable()) g_pde_io_thread.join();
     if (g_abm_io_thread.joinable()) g_abm_io_thread.join();
 }
 
+// Collect all PDE substrates via single async D2H into pinned buffer, then
+// launch background file write once D2H completes.
+static void export_pde_async(int grid_x, int grid_y, int grid_z, const std::string& path) {
+    if (g_pde_io_thread.joinable()) g_pde_io_thread.join();
+
+    int bi = g_pde_buf_idx;
+    float* dst = g_pde_pinned[bi];
+
+    // Single async D2H of all substrates on dedicated stream
+    PDAC::g_pde_solver->get_all_concentrations_async(dst, g_pde_stream);
+    cudaEventRecord(g_pde_event, g_pde_stream);
+
+    size_t n_floats = g_pde_buf_floats;
+    g_pde_io_thread = std::thread([dst, n_floats, path, grid_x, grid_y, grid_z]() {
+        // Wait for D2H to finish (non-spinning — yields CPU)
+        cudaEventSynchronize(g_pde_event);
+        write_pde_npy_buf(path.c_str(), grid_x, grid_y, grid_z, dst, n_floats);
+    });
+    g_pde_buf_idx = 1 - bi;
+}
+
 // Called manually from main() after presim completes — captures true day-0 PDE state.
 void exportPDEData_step0(int grid_x, int grid_y, int grid_z) {
     ensureOutputDirectories();
     if (!PDAC::g_pde_solver) return;
-
-    if (g_pde_io_thread.joinable()) g_pde_io_thread.join();
-    int bi = g_pde_buf_idx;
-    collect_pde_to_buf(g_pde_bufs[bi], grid_x, grid_y, grid_z);
-    std::string path = "outputs/pde/pde_step_000000.npy";
-    g_pde_io_thread = std::thread([bi, path, grid_x, grid_y, grid_z]() {
-        write_pde_npy_buf(path.c_str(), grid_x, grid_y, grid_z, g_pde_bufs[bi]);
-    });
-    g_pde_buf_idx = 1 - bi;
+    export_pde_async(grid_x, grid_y, grid_z, "outputs/pde/pde_step_000000.npy");
 }
 
 FLAMEGPU_STEP_FUNCTION(exportPDEData) {
@@ -155,18 +188,10 @@ FLAMEGPU_STEP_FUNCTION(exportPDEData) {
     const int grid_y = FLAMEGPU->environment.getProperty<int>("grid_size_y");
     const int grid_z = FLAMEGPU->environment.getProperty<int>("grid_size_z");
 
-    if (g_pde_io_thread.joinable()) g_pde_io_thread.join();
-    int bi = g_pde_buf_idx;
-    collect_pde_to_buf(g_pde_bufs[bi], grid_x, grid_y, grid_z);
-
     char path_buf[256];
     snprintf(path_buf, sizeof(path_buf), "outputs/pde/pde_step_%06d.npy",
              static_cast<int>(main_step + 1));
-    std::string path = path_buf;
-    g_pde_io_thread = std::thread([bi, path, grid_x, grid_y, grid_z]() {
-        write_pde_npy_buf(path.c_str(), grid_x, grid_y, grid_z, g_pde_bufs[bi]);
-    });
-    g_pde_buf_idx = 1 - bi;
+    export_pde_async(grid_x, grid_y, grid_z, std::string(path_buf));
 }
 
 // ============================================================================
@@ -520,6 +545,11 @@ int main(int argc, const char** argv) {
 
     // Store PDE device pointers in model environment
     PDAC::set_pde_pointers_in_environment(*model);
+
+    // Allocate pinned host buffers and CUDA stream for async PDE output
+    if (config.pde_out) {
+        init_pde_io(config.grid_x, config.grid_y, config.grid_z);
+    }
     init_lap("init_pde");
 
     // ========== GPU MEMORY QUERY (after PDE allocation) ==========
@@ -781,6 +811,7 @@ int main(int argc, const char** argv) {
     flush_async_io();
 
     // ========== CLEANUP ==========
+    cleanup_pde_io();
     PDAC::cleanup_pde_solver();
 
     // Free GPU event counter memory
