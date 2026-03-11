@@ -31,7 +31,8 @@ sacctmgr show assoc user=$USER format=account%30
 ## 2. Load Modules and Clone
 
 ```bash
-module load cuda cmake gcc
+module purge
+module load GCC/12.3.0 CUDA/12.1.1 cmake sundials/6.3.0 Boost/1.82.0-GCC-12.3.0
 git clone git@github.com:jeliason/SPQSP_PDAC.git
 cd SPQSP_PDAC/PDAC/sim
 ```
@@ -48,8 +49,21 @@ cd PDAC/sim
 
 ## 3. Build
 
+First time (full build, ~5 min):
+
 ```bash
-./build.sh --cuda-arch 80   # A100 = arch 80, L40s = arch 89
+cmake -S . -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CUDA_ARCHITECTURES=80 \
+  -DSUNDIALS_DIR=/data/apps/extern/sundials/6.3.0 \
+  -DBOOST_ROOT=/data/apps/extern/easybuild/Boost/1.82.0-GCC-12.3.0
+cmake --build build --parallel $(nproc)
+```
+
+After code changes (incremental, ~10 sec):
+
+```bash
+cmake --build build --parallel $(nproc)
 ```
 
 ## 4. Run A/B Benchmark (old vs new)

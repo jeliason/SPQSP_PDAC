@@ -168,6 +168,12 @@ target_compile_options(pdac PRIVATE
     $<$<COMPILE_LANGUAGE:CUDA>:--diag-suppress=1301>
 )
 
+# Boost 1.82+ uses std::source_location in throw_exception.hpp which triggers
+# an nvcc bug with consteval. Disable it for CUDA compilation.
+target_compile_definitions(pdac PRIVATE
+    $<$<COMPILE_LANGUAGE:CUDA>:BOOST_NO_CXX20_HDR_SOURCE_LOCATION>
+)
+
 # Build type
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
