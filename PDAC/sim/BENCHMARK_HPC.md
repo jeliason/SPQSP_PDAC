@@ -32,10 +32,15 @@ sacctmgr show assoc user=$USER format=account%30
 
 ```bash
 module purge
-module load GCC/12.3.0 CUDA/12.1.1 cmake sundials/6.3.0 Boost/1.82.0-GCC-12.3.0
+module load GCC/12.3.0 CUDA/12.1.1 cmake Boost/1.82.0-GCC-12.3.0
 git clone git@github.com:jeliason/SPQSP_PDAC.git
 cd SPQSP_PDAC/PDAC/sim
 ```
+
+> **Note:** QSP coupling requires SUNDIALS 4.x but Rockfish only has 6.3.0 (incompatible API).
+> The build below skips SUNDIALS/QSP. This is fine for I/O benchmarking — QSP is not
+> involved in the I/O path. To enable QSP, SUNDIALS 4.x must be built from source or
+> the QSP code updated for the SUNDIALS 6 API.
 
 If already cloned, just pull:
 
@@ -55,8 +60,7 @@ First time (full build, ~5 min):
 cmake -S . -B build \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_CUDA_ARCHITECTURES=80 \
-  -DSUNDIALS_DIR=/data/apps/extern/sundials/6.3.0 \
-  -DBOOST_ROOT=/data/apps/extern/easybuild/Boost/1.82.0-GCC-12.3.0
+  -DSUNDIALS_DIR=/nonexistent
 cmake --build build --parallel $(nproc)
 ```
 

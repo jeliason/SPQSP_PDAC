@@ -1,5 +1,6 @@
 #include "CVODEBase.h"
 
+#include <algorithm>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -18,6 +19,7 @@ CVODEBase::CVODEBase()
 , _A(NULL)
 , _LS(NULL)
 , _cvode_mem(NULL)
+, _sun_ctx(NULL)
 , _trigger_element_type()
 , _trigger_element_satisfied()
 , _event_triggered()
@@ -37,6 +39,7 @@ CVODEBase::CVODEBase(const CVODEBase & c)
 , _A(NULL)
 , _LS(NULL)
 , _cvode_mem(NULL)
+, _sun_ctx(NULL)
 , _trigger_element_type()
 , _trigger_element_satisfied()
 , _event_triggered()
@@ -207,13 +210,17 @@ void CVODEBase::setupCVODE(){
 	try{
 		int flag;
 
-		_y = N_VNew_Serial(_neq);
+		// SUNDIALS 6+ requires a context for all object creation
+		flag = SUNContext_Create(NULL, &_sun_ctx);
+		check_flag(&flag, "SUNContext_Create", 1);
+
+		_y = N_VNew_Serial(_neq, _sun_ctx);
 		check_flag((void *)_y, "N_VNew_Serial", 0);
 
-		//_abstol = N_VNew_Serial(_neq);
+		//_abstol = N_VNew_Serial(_neq, _sun_ctx);
 		//check_flag((void *)_abstol, "N_VNew_Serial", 0);
 
-		_cvode_mem = CVodeCreate(CV_BDF);
+		_cvode_mem = CVodeCreate(CV_BDF, _sun_ctx);
 		check_flag((void *)_cvode_mem, "CVodeCreate", 0);
 
 		/* Call CVodeInit to initialize the integrator memory and specify the
@@ -238,11 +245,11 @@ void CVODEBase::setupCVODE(){
 		check_flag(&flag, "CVodeSVtolerances", 1);
 
 		/* Create dense SUNMatrix for use in linear solves */
-		_A = SUNDenseMatrix(_neq, _neq);
+		_A = SUNDenseMatrix(_neq, _neq, _sun_ctx);
 		check_flag(&flag, "SUNDenseMatrix", 1);
 
 		/* Create dense SUNLinearSolver object for use by CVode */
-		_LS = SUNLinSol_Dense(_y, _A);
+		_LS = SUNLinSol_Dense(_y, _A, _sun_ctx);
 		check_flag(&flag, "SUNLinSol_Dense", 1);
 
 		/* Call CVodeSetLinearSolver to attach the matrix and linear solver to CVode */
@@ -532,6 +539,12 @@ bool CVODEBase::freeMem(){
 
 	/* Free integrator memory */
 	CVodeFree(&_cvode_mem);
+
+	/* Free SUNDIALS context */
+	if (_sun_ctx) {
+		SUNContext_Free(&_sun_ctx);
+		_sun_ctx = NULL;
+	}
 	return true;
 }
 /*!
