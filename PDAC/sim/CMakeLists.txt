@@ -36,31 +36,55 @@ if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
 endif()
 
 # Find SUNDIALS (CVODE) - optional for QSP coupling
-# Manual path-based discovery (SUNDIALS doesn't have CMake config files)
+# Searches SUNDIALS_DIR, then common HPC module paths
 set(SUNDIALS_DIR "$ENV{HOME}/lib/sundials-4.0.1" CACHE PATH "SUNDIALS installation directory")
-if(EXISTS "${SUNDIALS_DIR}/lib" AND EXISTS "${SUNDIALS_DIR}/include")
-    set(SUNDIALS_FOUND TRUE)
-    set(SUNDIALS_INCLUDE_DIR "${SUNDIALS_DIR}/include")
-    set(SUNDIALS_LIBRARIES
-        "${SUNDIALS_DIR}/lib/libsundials_cvode.so"
-        "${SUNDIALS_DIR}/lib/libsundials_nvecserial.so"
-    )
-    message(STATUS "SUNDIALS found at ${SUNDIALS_DIR}")
-else()
-    set(SUNDIALS_FOUND FALSE)
+set(SUNDIALS_FOUND FALSE)
+# Try lib/ then lib64/ for the library directory
+foreach(_sundials_libdir "lib" "lib64")
+    if(EXISTS "${SUNDIALS_DIR}/${_sundials_libdir}" AND EXISTS "${SUNDIALS_DIR}/include")
+        # Find cvode library (try .so then .a)
+        find_library(_sundials_cvode NAMES sundials_cvode
+            PATHS "${SUNDIALS_DIR}/${_sundials_libdir}" NO_DEFAULT_PATH)
+        find_library(_sundials_nvec NAMES sundials_nvecserial
+            PATHS "${SUNDIALS_DIR}/${_sundials_libdir}" NO_DEFAULT_PATH)
+        if(_sundials_cvode AND _sundials_nvec)
+            set(SUNDIALS_FOUND TRUE)
+            set(SUNDIALS_INCLUDE_DIR "${SUNDIALS_DIR}/include")
+            set(SUNDIALS_LIBRARIES "${_sundials_cvode}" "${_sundials_nvec}")
+            message(STATUS "SUNDIALS found at ${SUNDIALS_DIR} (${_sundials_libdir})")
+            break()
+        endif()
+        unset(_sundials_cvode CACHE)
+        unset(_sundials_nvec CACHE)
+    endif()
+endforeach()
+if(NOT SUNDIALS_FOUND)
     message(STATUS "SUNDIALS not found at ${SUNDIALS_DIR}")
 endif()
 
 # Find BOOST for optional QSP features
-# Manual path-based discovery
-set(BOOST_ROOT "$ENV{HOME}/lib/boost_1_70_0" CACHE PATH "Boost installation directory")
-if(EXISTS "${BOOST_ROOT}/lib" AND EXISTS "${BOOST_ROOT}/include")
-    set(Boost_FOUND TRUE)
-    set(Boost_INCLUDE_DIR "${BOOST_ROOT}/include")
-    set(Boost_LIBRARIES "${BOOST_ROOT}/lib/libboost_serialization.so")
-    message(STATUS "Boost found at ${BOOST_ROOT}")
+# Checks BOOST_ROOT env var (set by HPC modules), then fallback path
+if(DEFINED ENV{BOOST_ROOT})
+    set(BOOST_ROOT "$ENV{BOOST_ROOT}" CACHE PATH "Boost installation directory" FORCE)
 else()
-    set(Boost_FOUND FALSE)
+    set(BOOST_ROOT "$ENV{HOME}/lib/boost_1_70_0" CACHE PATH "Boost installation directory")
+endif()
+set(Boost_FOUND FALSE)
+foreach(_boost_libdir "lib" "lib64")
+    if(EXISTS "${BOOST_ROOT}/${_boost_libdir}" AND EXISTS "${BOOST_ROOT}/include")
+        find_library(_boost_serial NAMES boost_serialization
+            PATHS "${BOOST_ROOT}/${_boost_libdir}" NO_DEFAULT_PATH)
+        if(_boost_serial)
+            set(Boost_FOUND TRUE)
+            set(Boost_INCLUDE_DIR "${BOOST_ROOT}/include")
+            set(Boost_LIBRARIES "${_boost_serial}")
+            message(STATUS "Boost found at ${BOOST_ROOT} (${_boost_libdir})")
+            break()
+        endif()
+        unset(_boost_serial CACHE)
+    endif()
+endforeach()
+if(NOT Boost_FOUND)
     message(STATUS "Boost not found at ${BOOST_ROOT}")
 endif()
 
