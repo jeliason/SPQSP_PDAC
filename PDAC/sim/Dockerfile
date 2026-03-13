@@ -10,20 +10,36 @@
 #   docker build -t spqsp-pdac:latest .
 #   docker build --build-arg CUDA_ARCH=89 -t spqsp-pdac:l40s .
 #
-# Run (interactive shell):
+# Run (Docker):
 #   docker run --gpus all -it spqsp-pdac:latest
+#   docker run --gpus all -v ./results:/outputs spqsp-pdac:latest \
+#       ./build/bin/pdac -p resource/param_all_test.xml -s 500 --seed 42
+#
+# Run (Apptainer/Singularity on HPC):
+#   apptainer pull docker://ghcr.io/jeliason/spqsp-pdac:latest
+#   apptainer run --nv spqsp-pdac_latest.sif
+#   apptainer exec --nv --bind ./results:/outputs spqsp-pdac_latest.sif \
+#       /workspace/SPQSP_PDAC/PDAC/sim/build/bin/pdac -p resource/param_all_test.xml -s 500
+#
+# Sweep example (SLURM array job):
+#   apptainer exec --nv --bind ./results_${SLURM_ARRAY_TASK_ID}:/outputs \
+#       spqsp-pdac_latest.sif \
+#       /workspace/SPQSP_PDAC/PDAC/sim/build/bin/pdac \
+#       -p resource/param_all_test.xml -s 500 --seed ${SLURM_ARRAY_TASK_ID}
 # ============================================================================
 
-FROM nvidia/cuda:12.8.0-devel-ubuntu24.04
+# ==========================================================================
+# Stage 1: Build everything
+# ==========================================================================
+FROM nvidia/cuda:12.8.0-devel-ubuntu24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# ---- Layer 1: System dependencies (cached until base image or deps change) ----
+# ---- Layer 1: System dependencies ----
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
         cmake g++ git ca-certificates curl \
         libboost-serialization-dev \
-        vim less python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Build SUNDIALS 6.3.0 from source
@@ -55,7 +71,7 @@ RUN git clone --branch ${FLAMEGPU_TAG} --depth 1 https://github.com/FLAMEGPU/FLA
         -DFLAMEGPU_BUILD_PYTHON=OFF && \
     cmake --build . --parallel $(nproc)
 
-# ---- Layer 3: Simulation code (rebuilds on code changes) ----
+# ---- Layer 3: Simulation code ----
 ARG BRANCH=main
 
 WORKDIR /workspace
@@ -68,5 +84,40 @@ RUN git clone --branch ${BRANCH} https://github.com/jeliason/SPQSP_PDAC.git && \
         -DFLAMEGPU_ROOT=/opt/flamegpu/src && \
     cmake --build build --parallel $(nproc)
 
-WORKDIR /workspace/SPQSP_PDAC/PDAC/sim
+# ==========================================================================
+# Stage 2: Runtime image (much smaller — no compilers)
+# ==========================================================================
+FROM nvidia/cuda:12.8.0-runtime-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends \
+        libboost-serialization1.83.0 \
+        python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy SUNDIALS shared libraries
+COPY --from=builder /usr/local/lib/libsundials_* /usr/local/lib/
+RUN ldconfig
+
+# Copy the compiled binary and resource files
+COPY --from=builder /workspace/SPQSP_PDAC/PDAC/sim/build/bin/pdac /usr/local/bin/pdac
+COPY --from=builder /workspace/SPQSP_PDAC/PDAC/sim/resource /workspace/resource
+COPY --from=builder /workspace/SPQSP_PDAC/PDAC/sim/benchmark_io.sh /workspace/benchmark_io.sh
+COPY --from=builder /workspace/SPQSP_PDAC/PDAC/sim/analyze_benchmark.py /workspace/analyze_benchmark.py
+
+# Output directory — mount a host volume here for results
+RUN mkdir -p /outputs
+VOLUME /outputs
+
+# Non-root user (required by some HPC platforms)
+RUN useradd -m -s /bin/bash simuser
+USER simuser
+
+WORKDIR /workspace
 CMD ["/bin/bash"]
+
+# Labels for traceability
+LABEL org.opencontainers.image.source="https://github.com/jeliason/SPQSP_PDAC"
+LABEL org.opencontainers.image.description="SPQSP_PDAC GPU simulation (FLAMEGPU2 + QSP/SUNDIALS)"
