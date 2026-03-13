@@ -90,8 +90,8 @@ build_binary() {
         cmake_args+=(-DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCH")
     fi
 
-    cmake -S "$src_dir" -B "$build_dir" "${cmake_args[@]}" > "${build_dir}/cmake_config.log" 2>&1
-    cmake --build "$build_dir" --parallel "$(nproc)" > "${build_dir}/cmake_build.log" 2>&1
+    cmake -S "$src_dir" -B "$build_dir" "${cmake_args[@]}" 2>&1 | tee "${build_dir}/cmake_config.log"
+    cmake --build "$build_dir" --parallel "$(nproc)" 2>&1 | tee "${build_dir}/cmake_build.log"
 
     if [[ ! -x "${build_dir}/bin/pdac" ]]; then
         echo "  ERROR: Build failed for ${label}. Check ${build_dir}/cmake_build.log"
