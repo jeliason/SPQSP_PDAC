@@ -45,6 +45,8 @@ AB_REF="HEAD"
 SKIP_BUILD=false
 CUDA_ARCH=""
 BINARY=""
+SUNDIALS_DIR=""
+BOOST_ROOT=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -63,6 +65,8 @@ while [[ $# -gt 0 ]]; do
         --seed)        SEED="$2";       shift 2 ;;
         --skip-build)  SKIP_BUILD=true; shift ;;
         --cuda-arch)   CUDA_ARCH="$2";  shift 2 ;;
+        --sundials-dir) SUNDIALS_DIR="$2"; shift 2 ;;
+        --boost-root)  BOOST_ROOT="$2";  shift 2 ;;
         --help|-h)
             sed -n '2,/^$/p' "$0" | sed 's/^# \?//'
             exit 0 ;;
@@ -88,6 +92,12 @@ build_binary() {
     local cmake_args=(-DCMAKE_BUILD_TYPE=Release)
     if [[ -n "$CUDA_ARCH" ]]; then
         cmake_args+=(-DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCH")
+    fi
+    if [[ -n "$SUNDIALS_DIR" ]]; then
+        cmake_args+=(-DSUNDIALS_DIR="$SUNDIALS_DIR")
+    fi
+    if [[ -n "$BOOST_ROOT" ]]; then
+        cmake_args+=(-DBOOST_ROOT="$BOOST_ROOT")
     fi
 
     cmake -S "$src_dir" -B "$build_dir" "${cmake_args[@]}" 2>&1 | tee "${build_dir}/cmake_config.log"

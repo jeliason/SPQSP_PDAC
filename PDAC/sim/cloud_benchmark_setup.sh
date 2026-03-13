@@ -143,7 +143,7 @@ echo "=== Running A/B benchmark (HEAD~1 vs HEAD) ==="
 echo ""
 
 chmod +x benchmark_io.sh
-./benchmark_io.sh --ab HEAD~1 --steps 50 --cuda-arch "$CUDA_ARCH"
+./benchmark_io.sh --ab HEAD~1 --steps 50 --cuda-arch "$CUDA_ARCH" --sundials-dir "${SUNDIALS_PREFIX}"
 
 echo ""
 echo "=== Done! ==="
