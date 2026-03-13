@@ -1,7 +1,10 @@
 # ============================================================================
 # SPQSP_PDAC simulation environment
 #
-# Pre-built FLAMEGPU2 + SUNDIALS + Boost so incremental builds take ~10 sec.
+# Layer structure (top = changes least, bottom = changes most):
+#   1. CUDA + system deps + SUNDIALS + Boost  (rarely changes)
+#   2. FLAMEGPU2 library build                (only on FLAMEGPU version bump)
+#   3. Clone + build simulation code          (changes with each code update)
 #
 # Build:
 #   docker build -t spqsp-pdac:latest .
@@ -9,16 +12,13 @@
 #
 # Run (interactive shell):
 #   docker run --gpus all -it spqsp-pdac:latest
-#
-# Run a simulation directly:
-#   docker run --gpus all spqsp-pdac:latest ./build/bin/pdac -p resource/param_all_test.xml -s 200
 # ============================================================================
 
 FROM nvidia/cuda:12.8.0-devel-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# System dependencies
+# ---- Layer 1: System dependencies (cached until base image or deps change) ----
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends \
         cmake g++ git ca-certificates curl \
@@ -41,8 +41,21 @@ RUN cd /tmp && \
     cmake --install build && \
     rm -rf /tmp/sundials-${SUNDIALS_VER}
 
-# Clone repo and do a full build to cache FLAMEGPU2 compilation
+# ---- Layer 2: FLAMEGPU2 build (cached until version tag changes) ----
 ARG CUDA_ARCH=80
+ARG FLAMEGPU_TAG=v2.0.0-rc.4
+
+WORKDIR /opt/flamegpu
+RUN git clone --branch ${FLAMEGPU_TAG} --depth 1 https://github.com/FLAMEGPU/FLAMEGPU2.git src && \
+    mkdir build && cd build && \
+    cmake ../src \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCH} \
+        -DFLAMEGPU_BUILD_TESTS=OFF \
+        -DFLAMEGPU_BUILD_PYTHON=OFF && \
+    cmake --build . --parallel $(nproc)
+
+# ---- Layer 3: Simulation code (rebuilds on code changes) ----
 ARG BRANCH=main
 
 WORKDIR /workspace
@@ -51,7 +64,8 @@ RUN git clone --branch ${BRANCH} https://github.com/jeliason/SPQSP_PDAC.git && \
     cmake -S . -B build \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_CUDA_ARCHITECTURES=${CUDA_ARCH} \
-        -DSUNDIALS_DIR=/usr/local && \
+        -DSUNDIALS_DIR=/usr/local \
+        -DFLAMEGPU_ROOT=/opt/flamegpu/src && \
     cmake --build build --parallel $(nproc)
 
 WORKDIR /workspace/SPQSP_PDAC/PDAC/sim
