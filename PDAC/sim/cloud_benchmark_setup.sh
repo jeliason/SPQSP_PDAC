@@ -42,10 +42,13 @@ detect_cuda_arch() {
 }
 
 CUDA_ARCH=""
+STEPS=200
+EXTRA_ARGS=()
 while [[ $# -gt 0 ]]; do
     case $1 in
         --cuda-arch) CUDA_ARCH="$2"; shift 2 ;;
-        *) echo "Unknown option: $1"; exit 1 ;;
+        --steps) STEPS="$2"; shift 2 ;;
+        *) EXTRA_ARGS+=("$1"); shift ;;
     esac
 done
 
@@ -143,7 +146,7 @@ echo "=== Running A/B benchmark (HEAD~1 vs HEAD) ==="
 echo ""
 
 chmod +x benchmark_io.sh
-./benchmark_io.sh --ab HEAD~1 --steps 50 --cuda-arch "$CUDA_ARCH" --sundials-dir "${SUNDIALS_PREFIX}"
+./benchmark_io.sh --ab HEAD~1 --steps "$STEPS" --cuda-arch "$CUDA_ARCH" --sundials-dir "${SUNDIALS_PREFIX}" "${EXTRA_ARGS[@]}"
 
 echo ""
 echo "=== Done! ==="
