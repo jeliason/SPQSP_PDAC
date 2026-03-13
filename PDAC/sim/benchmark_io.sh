@@ -89,6 +89,12 @@ build_binary() {
     echo "  Building ${label}..."
     mkdir -p "$build_dir"
 
+    # Reuse pre-built FLAMEGPU2 cache if available (from Docker image)
+    if [[ -n "${FLAMEGPU_CACHE:-}" && -d "$FLAMEGPU_CACHE" && ! -d "${build_dir}/_deps" ]]; then
+        echo "  Copying pre-built FLAMEGPU2 cache into ${build_dir}/_deps ..."
+        cp -a "$FLAMEGPU_CACHE" "${build_dir}/_deps"
+    fi
+
     local cmake_args=(-DCMAKE_BUILD_TYPE=Release)
     if [[ -n "$CUDA_ARCH" ]]; then
         cmake_args+=(-DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCH")
