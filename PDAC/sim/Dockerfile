@@ -43,7 +43,7 @@ RUN cd /tmp && \
 
 # Clone repo and do a full build to cache FLAMEGPU2 compilation
 ARG CUDA_ARCH=80
-ARG BRANCH=io-optimization
+ARG BRANCH=main
 
 WORKDIR /workspace
 RUN git clone --branch ${BRANCH} https://github.com/jeliason/SPQSP_PDAC.git && \
