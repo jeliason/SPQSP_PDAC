@@ -123,10 +123,9 @@ echo "=== Building (CUDA arch ${CUDA_ARCH}) ==="
 cmake -S . -B build \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCH" \
-    -DSUNDIALS_DIR="${SUNDIALS_PREFIX}" \
-    > build_config.log 2>&1
+    -DSUNDIALS_DIR="${SUNDIALS_PREFIX}"
 
-cmake --build build --parallel "$(nproc)" 2>&1 | tail -5
+cmake --build build --parallel "$(nproc)"
 
 if [[ ! -x build/bin/pdac ]]; then
     echo "ERROR: Build failed. Check build_config.log"
