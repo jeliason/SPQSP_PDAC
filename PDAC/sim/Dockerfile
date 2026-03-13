@@ -14,7 +14,7 @@
 #   docker run --gpus all spqsp-pdac:latest ./build/bin/pdac -p resource/param_all_test.xml -s 200
 # ============================================================================
 
-FROM nvidia/cuda:12.1.1-devel-ubuntu22.04
+FROM nvidia/cuda:12.1.1-devel-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
