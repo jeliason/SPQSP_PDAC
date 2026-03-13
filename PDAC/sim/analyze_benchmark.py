@@ -69,18 +69,20 @@ def read_wall_time(path):
 # Summarize one run directory
 # ============================================================================
 
-def summarize_run(run_dir, label=None):
+def summarize_run(run_dir, label=None, warmup=5):
     run_dir = Path(run_dir)
     outputs = run_dir / "outputs"
 
-    timing = read_timing_csv(outputs / "timing.csv")
+    timing_all = read_timing_csv(outputs / "timing.csv")
     layers = read_layer_timing_csv(outputs / "layer_timing.csv")
     init = read_init_timing_csv(outputs / "init_timing.csv")
     wall_ms = read_wall_time(run_dir / "wall_time_ms.txt")
 
-    if not timing:
+    if not timing_all:
         return None
 
+    # Skip warm-up steps for more stable averages
+    timing = timing_all[warmup:] if len(timing_all) > warmup else timing_all
     n = len(timing)
     avg = lambda key: sum(r[key] for r in timing) / n
 
@@ -94,7 +96,9 @@ def summarize_run(run_dir, label=None):
             else:
                 pde_size = total
 
-    layer_avgs = {name: sum(v)/len(v) for name, v in layers.items() if v}
+    layer_avgs = {name: sum(v[warmup:])/len(v[warmup:]) for name, v in layers.items() if len(v) > warmup}
+    if not layer_avgs:
+        layer_avgs = {name: sum(v)/len(v) for name, v in layers.items() if v}
 
     return {
         "name": label or run_dir.name,
@@ -254,10 +258,11 @@ def format_ab_comparison(suites_data):
     return lines
 
 
-def format_report(suites_data):
+def format_report(suites_data, warmup=5):
     lines = []
     lines.append("=" * 72)
     lines.append("  I/O BENCHMARK REPORT")
+    lines.append(f"  (first {warmup} warm-up steps excluded from averages)")
     lines.append("=" * 72)
     lines.append("")
 
@@ -376,6 +381,17 @@ def main():
         return
 
     bench_dir = Path(sys.argv[1])
+    warmup = 5
+    # Check for --warmup flag
+    remaining = sys.argv[2:]
+    i = 0
+    while i < len(remaining):
+        if remaining[i] == "--warmup" and i + 1 < len(remaining):
+            warmup = int(remaining[i + 1])
+            i += 2
+        else:
+            i += 1
+
     run_dirs = find_run_dirs(bench_dir)
 
     if not run_dirs:
@@ -389,13 +405,13 @@ def main():
     for suite_name, dirs in suites.items():
         summaries = []
         for d in dirs:
-            s = summarize_run(d)
+            s = summarize_run(d, warmup=warmup)
             if s:
                 summaries.append(s)
         if summaries:
             suites_data[suite_name] = summaries
 
-    report = format_report(suites_data)
+    report = format_report(suites_data, warmup=warmup)
     print(report)
 
     # Save outputs
